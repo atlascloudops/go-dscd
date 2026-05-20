@@ -58,6 +58,10 @@ func (s *FileStore) Save(instances map[string]*domain.WorkspaceInstance) error {
 	return os.WriteFile(s.path, data, 0644)
 }
 
+func (s *FileStore) Path() string {
+	return s.path
+}
+
 func (s *FileStore) lockPath() string {
 	return s.path + ".lock"
 }

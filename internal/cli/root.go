@@ -3,12 +3,22 @@ package cli
 import (
 	"fmt"
 
+	"github.com/atlascloudops/go-dscd/internal/domain"
+	"github.com/atlascloudops/go-dscd/internal/store"
 	"github.com/spf13/cobra"
+)
+
+const (
+	defaultStatePath = "/opt/dsc/var/dscd/state.json"
+	defaultLogDir    = "/opt/dsc/var/dscd/logs"
 )
 
 var jsonOutput bool
 
 func NewRootCommand(version string) *cobra.Command {
+	var statePath string
+	var logDir string
+
 	root := &cobra.Command{
 		Use:   "dscd",
 		Short: "Daemon for workspace lifecycle management",
@@ -19,9 +29,14 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
+	root.PersistentFlags().StringVar(&statePath, "state-path", defaultStatePath, "path to state file")
+	root.PersistentFlags().StringVar(&logDir, "log-dir", defaultLogDir, "path to log directory")
 
 	root.Version = version
 	root.SetVersionTemplate(fmt.Sprintf("dscd v%s\n", version))
+
+	// Lazy init store so flags are parsed first
+	root.PersistentPreRun = func(cmd *cobra.Command, args []string) {}
 
 	workspace := &cobra.Command{
 		Use:   "workspace",
@@ -31,15 +46,48 @@ func NewRootCommand(version string) *cobra.Command {
 		},
 	}
 
-	status := &cobra.Command{
-		Use:   "status",
-		Short: "Show daemon status",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("dscd is running")
-			return nil
-		},
+	// Wire subcommands with a factory that resolves the store lazily
+	storeFactory := func() *store.FileStore {
+		return store.NewFileStore(statePath)
 	}
 
-	root.AddCommand(workspace, status)
+	// We need to add commands after flag parsing, so use PersistentPreRun
+	// Actually cobra parses flags before RunE, so factory works fine
+	fs := &lazyStore{factory: storeFactory}
+
+	workspace.AddCommand(
+		newWorkspaceProvisionCmd(fs, logDir),
+		newWorkspaceListCmd(fs),
+		newWorkspaceInspectCmd(fs),
+		newWorkspaceReconcileCmd(fs, logDir),
+		newWorkspaceLogsCmd(fs, logDir),
+	)
+
+	root.AddCommand(workspace, newStatusCmd(fs, version, &statePath))
 	return root
+}
+
+// lazyStore wraps store creation so flag values are resolved at call time, not registration time
+type lazyStore struct {
+	factory func() *store.FileStore
+	inst    *store.FileStore
+}
+
+func (l *lazyStore) get() *store.FileStore {
+	if l.inst == nil {
+		l.inst = l.factory()
+	}
+	return l.inst
+}
+
+func (l *lazyStore) Load() (map[string]*domain.WorkspaceInstance, error) {
+	return l.get().Load()
+}
+
+func (l *lazyStore) Save(instances map[string]*domain.WorkspaceInstance) error {
+	return l.get().Save(instances)
+}
+
+func (l *lazyStore) WithLock(fn func() error) error {
+	return l.get().WithLock(fn)
 }
