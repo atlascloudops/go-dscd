@@ -55,11 +55,7 @@ func (s *FileStore) Save(instances map[string]*domain.WorkspaceInstance) error {
 	if err != nil {
 		return err
 	}
-	// Use 0666 and override umask so root-created files remain writable by non-root users
-	old := syscall.Umask(0)
-	err = os.WriteFile(s.path, data, 0666)
-	syscall.Umask(old)
-	return err
+	return os.WriteFile(s.path, data, 0664)
 }
 
 func (s *FileStore) Path() string {
@@ -74,10 +70,7 @@ func (s *FileStore) WithLock(fn func() error) error {
 	if err := os.MkdirAll(filepath.Dir(s.lockPath()), 0755); err != nil {
 		return err
 	}
-	// Override umask so root-created lock file remains writable by non-root users
-	old := syscall.Umask(0)
-	f, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0666)
-	syscall.Umask(old)
+	f, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0664)
 	if err != nil {
 		return err
 	}
