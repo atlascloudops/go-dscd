@@ -556,15 +556,16 @@ func (p *Provisioner) bareClone(spec WorkspaceSpec) error {
 	return nil
 }
 
-// addWorktree runs git -C <bareRoot> worktree add <path> <branch> as the owner.
+// addWorktree runs git -C <bareRoot> worktree add [-f] <path> <branch> as the owner.
+// The -f flag allows checking out a branch already used by another worktree.
 func (p *Provisioner) addWorktree(bareRoot, worktreePath, branch, owner string) error {
-	wtCmd := fmt.Sprintf("git -C %s worktree add %s %s", bareRoot, worktreePath, branch)
+	wtCmd := fmt.Sprintf("git -C %s worktree add -f %s %s", bareRoot, worktreePath, branch)
 
 	var cmd *exec.Cmd
 	if owner != "" && owner != currentUser() {
 		cmd = exec.Command("su", "-", owner, "-c", wtCmd)
 	} else {
-		cmd = exec.Command("git", "-C", bareRoot, "worktree", "add", worktreePath, branch)
+		cmd = exec.Command("git", "-C", bareRoot, "worktree", "add", "-f", worktreePath, branch)
 	}
 
 	output, err := cmd.CombinedOutput()
