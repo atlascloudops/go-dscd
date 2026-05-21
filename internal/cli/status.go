@@ -15,7 +15,7 @@ type StatusData struct {
 	StateFileSizeB   int64          `json:"state_file_size_bytes"`
 	WorkspaceCount   int            `json:"workspace_count"`
 	WorkspaceSummary map[string]int `json:"workspace_summary"`
-	LastReconcileAt  *string        `json:"last_reconcile_at"`
+	LastSyncedAt  *string        `json:"last_synced_at"`
 }
 
 func newStatusCmd(store domain.StateStore, version string, statePath *string) *cobra.Command {
@@ -54,9 +54,9 @@ func newStatusCmd(store domain.StateStore, version string, statePath *string) *c
 				data.WorkspaceCount = len(instances)
 				for _, inst := range instances {
 					data.WorkspaceSummary[string(inst.State)]++
-					if inst.LastReconcileAt != nil {
-						ts := inst.LastReconcileAt.Format("2006-01-02T15:04:05Z")
-						data.LastReconcileAt = &ts
+					if inst.LastSyncedAt != nil {
+						ts := inst.LastSyncedAt.Format("2006-01-02T15:04:05Z")
+						data.LastSyncedAt = &ts
 					}
 				}
 			}
@@ -73,10 +73,10 @@ func newStatusCmd(store domain.StateStore, version string, statePath *string) *c
 				data.WorkspaceSummary["ready"],
 				data.WorkspaceSummary["error"],
 				data.WorkspaceSummary["pending"])
-			if data.LastReconcileAt != nil {
-				fmt.Printf("Last reconcile:   %s\n", *data.LastReconcileAt)
+			if data.LastSyncedAt != nil {
+				fmt.Printf("Last sync:   %s\n", *data.LastSyncedAt)
 			} else {
-				fmt.Printf("Last reconcile:   <never>\n")
+				fmt.Printf("Last sync:   <never>\n")
 			}
 			if data.StateFileExists {
 				fmt.Printf("State file size:  %s\n", humanSize(data.StateFileSizeB))

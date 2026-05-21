@@ -8,26 +8,26 @@ import (
 	"time"
 )
 
-type ReconcileReport struct {
+type SyncReport struct {
 	WorkspacesChecked int      `json:"workspaces_checked"`
 	StateChanges      []string `json:"state_changes"`
 	Errors            []string `json:"errors"`
 }
 
-type WorkspaceReconciler struct {
+type WorkspaceSyncer struct {
 	store  StateStore
 	logDir string
 }
 
-func NewReconciler(store StateStore, logDir string) *WorkspaceReconciler {
-	return &WorkspaceReconciler{store: store, logDir: logDir}
+func NewSyncer(store StateStore, logDir string) *WorkspaceSyncer {
+	return &WorkspaceSyncer{store: store, logDir: logDir}
 }
 
-func (r *WorkspaceReconciler) Reconcile() (*ReconcileReport, error) {
-	report := &ReconcileReport{}
+func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
+	report := &SyncReport{}
 
-	return report, r.store.WithLock(func() error {
-		instances, err := r.store.Load()
+	return report, s.store.WithLock(func() error {
+		instances, err := s.store.Load()
 		if err != nil {
 			return err
 		}
@@ -38,9 +38,11 @@ func (r *WorkspaceReconciler) Reconcile() (*ReconcileReport, error) {
 			report.WorkspacesChecked++
 			oldState := inst.State
 
-			// Check clone
+			// Check clone — .git may be a directory (traditional clone) or
+		// a file (worktree with gitdir: pointer). Either means the
+		// workspace exists on disk.
 			gitDir := filepath.Join(inst.Spec.ProjectRoot, ".git")
-			if info, statErr := os.Stat(gitDir); statErr == nil && info.IsDir() {
+			if _, statErr := os.Stat(gitDir); statErr == nil {
 				inst.CloneExists = true
 				if inst.State == StatePending || inst.State == StateError {
 					inst.State = StateReady
@@ -50,7 +52,7 @@ func (r *WorkspaceReconciler) Reconcile() (*ReconcileReport, error) {
 				inst.CloneExists = false
 				if inst.State == StateReady {
 					inst.State = StateError
-					msg := "clone directory missing after reboot"
+					msg := "worktree missing from disk"
 					inst.LastError = &msg
 				}
 			}
@@ -64,27 +66,35 @@ func (r *WorkspaceReconciler) Reconcile() (*ReconcileReport, error) {
 				inst.CredentialFresh = false
 			}
 
-			inst.LastReconcileAt = &now
+			// Refresh head commit and derive status
+			if inst.CloneExists {
+				inst.HeadCommit = ResolveHeadCommit(inst.Spec.ProjectRoot, inst.Spec.Owner)
+			} else {
+				inst.HeadCommit = ""
+			}
+			inst.DeriveStatus()
+
+			inst.LastSyncedAt = &now
 
 			if inst.State != oldState {
 				change := fmt.Sprintf("%s: %s -> %s", name, oldState, inst.State)
 				report.StateChanges = append(report.StateChanges, change)
-				r.writeLog(name, "reconcile", "%s", change)
+				s.writeLog(name, "sync", "%s", change)
 			} else {
-				r.writeLog(name, "reconcile", "Clone exists=%t, state confirmed: %s", inst.CloneExists, inst.State)
+				s.writeLog(name, "sync", "Clone exists=%t, state confirmed: %s", inst.CloneExists, inst.State)
 			}
 		}
 
-		return r.store.Save(instances)
+		return s.store.Save(instances)
 	})
 }
 
-func (r *WorkspaceReconciler) writeLog(name, phase, format string, args ...interface{}) {
-	if r.logDir == "" {
+func (s *WorkspaceSyncer) writeLog(name, phase, format string, args ...interface{}) {
+	if s.logDir == "" {
 		return
 	}
-	os.MkdirAll(r.logDir, 0755)
-	logPath := filepath.Join(r.logDir, name+".log")
+	os.MkdirAll(s.logDir, 0755)
+	logPath := filepath.Join(s.logDir, name+".log")
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return

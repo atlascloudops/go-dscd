@@ -22,7 +22,7 @@ func NewRootCommand(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "dscd",
 		Short: "Daemon for workspace lifecycle management",
-		Long:  "dscd manages workspace provisioning, reconciliation, and status on a pod.",
+		Long:  "dscd manages workspace provisioning, sync, and status on a pod.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -57,9 +57,11 @@ func NewRootCommand(version string) *cobra.Command {
 
 	workspace.AddCommand(
 		newWorkspaceProvisionCmd(fs, logDir),
+		newWorkspaceDeprovisionCmd(fs, logDir),
+		newWorkspacePruneCmd(fs, logDir),
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
-		newWorkspaceReconcileCmd(fs, logDir),
+		newWorkspaceSyncCmd(fs, logDir),
 		newWorkspaceLogsCmd(fs, logDir),
 	)
 

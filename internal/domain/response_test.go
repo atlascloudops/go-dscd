@@ -7,7 +7,7 @@ import (
 
 func TestOkResponse(t *testing.T) {
 	resp := OkResponse("workspace.list", []string{"ws1"})
-	if resp.Version != "v1" {
+	if resp.Version != "v2" {
 		t.Fatalf("expected version v1, got %s", resp.Version)
 	}
 	if resp.Status != "ok" {
@@ -23,7 +23,7 @@ func TestOkResponse(t *testing.T) {
 	}
 	var m map[string]interface{}
 	json.Unmarshal(data, &m)
-	if m["version"] != "v1" || m["command"] != "workspace.list" || m["status"] != "ok" {
+	if m["version"] != "v2" || m["command"] != "workspace.list" || m["status"] != "ok" {
 		t.Fatalf("unexpected JSON: %s", data)
 	}
 	if m["error"] != nil {

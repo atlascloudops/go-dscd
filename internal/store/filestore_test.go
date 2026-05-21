@@ -31,12 +31,11 @@ func TestRoundTrip(t *testing.T) {
 				ProjectRoot: "/home/user/code/repo1",
 				Owner:       "user",
 			},
-			State:           domain.StateReady,
-			CloneExists:     true,
-			CredentialHost:  "github.com",
-			CredentialFresh: true,
-			ProvisionedAt:   &now,
-			LastError:       nil,
+			State:          domain.StateReady,
+			Status:         "SYNCED",
+			CredentialHost: "github.com",
+			ProvisionedAt:  &now,
+			LastError:      nil,
 		},
 		"ws2": {
 			Spec: domain.WorkspaceSpec{
@@ -51,12 +50,11 @@ func TestRoundTrip(t *testing.T) {
 				ProjectRoot: "/home/user/code/repo2",
 				Owner:       "user",
 			},
-			State:           domain.StateError,
-			CloneExists:     false,
-			CredentialHost:  "gitlab.com",
-			CredentialFresh: false,
-			ProvisionedAt:   &now,
-			LastError:       &errMsg,
+			State:          domain.StateError,
+			Status:         "ERROR",
+			CredentialHost: "gitlab.com",
+			ProvisionedAt:  &now,
+			LastError:      &errMsg,
 		},
 	}
 
@@ -74,16 +72,22 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ws1 := loaded["ws1"]
-	if ws1.Spec.Name != "ws1" || ws1.State != domain.StateReady || !ws1.CloneExists {
+	if ws1.Spec.Name != "ws1" || ws1.State != domain.StateReady {
 		t.Fatalf("ws1 mismatch: %+v", ws1)
+	}
+	if ws1.Status != "SYNCED" {
+		t.Fatalf("ws1 status mismatch: got %q, want READY", ws1.Status)
 	}
 	if ws1.ProvisionedAt == nil || !ws1.ProvisionedAt.Equal(now) {
 		t.Fatalf("ws1 provisioned_at mismatch: got %v, want %v", ws1.ProvisionedAt, now)
 	}
 
 	ws2 := loaded["ws2"]
-	if ws2.Spec.Name != "ws2" || ws2.State != domain.StateError || ws2.CloneExists {
+	if ws2.Spec.Name != "ws2" || ws2.State != domain.StateError {
 		t.Fatalf("ws2 mismatch: %+v", ws2)
+	}
+	if ws2.Status != "ERROR" {
+		t.Fatalf("ws2 status mismatch: got %q, want ERROR", ws2.Status)
 	}
 	if ws2.LastError == nil || *ws2.LastError != errMsg {
 		t.Fatalf("ws2 last_error mismatch: %v", ws2.LastError)

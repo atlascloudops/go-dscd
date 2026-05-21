@@ -58,9 +58,10 @@ func enrichInstances(instances map[string]*domain.WorkspaceInstance) []*domain.W
 }
 
 func enrichLiveness(inst *domain.WorkspaceInstance) {
-	// Check clone exists
+	// Check clone exists — .git can be a directory (traditional clone)
+	// or a file (worktree pointer), either indicates the clone is present.
 	gitDir := filepath.Join(inst.Spec.ProjectRoot, ".git")
-	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+	if _, err := os.Stat(gitDir); err == nil {
 		inst.CloneExists = true
 	} else {
 		inst.CloneExists = false
@@ -79,4 +80,12 @@ func enrichLiveness(inst *domain.WorkspaceInstance) {
 	} else {
 		inst.CredentialFresh = false
 	}
+
+	// Derive status and head commit
+	if inst.CloneExists {
+		inst.HeadCommit = domain.ResolveHeadCommit(inst.Spec.ProjectRoot, inst.Spec.Owner)
+	} else {
+		inst.HeadCommit = ""
+	}
+	inst.DeriveStatus()
 }
