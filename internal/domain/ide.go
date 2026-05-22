@@ -70,11 +70,11 @@ type HTTPChecker interface {
 type defaultSystemdRunner struct{}
 
 func (d *defaultSystemdRunner) Start(unit string) error {
-	return exec.Command("systemctl", "start", unit).Run()
+	return exec.Command("sudo", "systemctl", "start", unit).Run()
 }
 
 func (d *defaultSystemdRunner) Stop(unit string) error {
-	return exec.Command("systemctl", "stop", unit).Run()
+	return exec.Command("sudo", "systemctl", "stop", unit).Run()
 }
 
 func (d *defaultSystemdRunner) IsActive(unit string) (bool, error) {
