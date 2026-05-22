@@ -60,6 +60,10 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 			appendEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
 		inst.CredentialFresh = p.checkCredentialFresh(spec)
+		// Hydrate before resolving head commit so it reflects the latest state
+		if dirExists(spec.BareRoot) {
+			p.hydrate(inst, spec)
+		}
 		inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 		instances[spec.Name] = inst
 		return store.Save(instances)
@@ -130,6 +134,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	p.writeLog(spec.Name, "provision", "Bare clone + default worktree complete")
 
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
+	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
@@ -205,6 +210,7 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 	p.writeLog(spec.Name, "provision", "Worktree add complete")
 
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
+	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
@@ -213,6 +219,94 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
 	return inst, nil
+}
+
+// hydrate fetches and fast-forward merges matching worktrees so the user lands
+// on an up-to-date checkout. A worktree is a candidate if it is the default
+// worktree or its branch matches spec.VCS.Branch. Hydration is best-effort:
+// fetch failures, dirty worktrees, and diverged branches are logged and skipped
+// without blocking provisioning.
+func (p *Provisioner) hydrate(inst *WorkspaceInstance, spec WorkspaceSpec) {
+	appendEvent(inst, EventHydrateStarted, "")
+	p.writeLog(spec.Name, "hydrate", "Starting hydration for %s", spec.BareRoot)
+
+	entries, err := ListWorktreeEntries(spec.BareRoot, spec.Owner)
+	if err != nil {
+		p.writeLog(spec.Name, "hydrate", "Failed to list worktrees: %v", err)
+		appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("worktree list failed: %v", err))
+		return
+	}
+
+	for _, entry := range entries {
+		// Filter: only hydrate the default worktree or worktrees on the requested branch
+		isDefault := filepath.Base(entry.Path) == "default"
+		branchMatch := entry.Branch == spec.VCS.Branch
+
+		if !isDefault && !branchMatch {
+			continue
+		}
+
+		targetBranch := entry.Branch
+		if targetBranch == "" {
+			// Detached HEAD or unknown branch — skip
+			p.writeLog(spec.Name, "hydrate", "Skipping %s: no branch", entry.Path)
+			appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: detached HEAD", filepath.Base(entry.Path)))
+			continue
+		}
+
+		// Check for dirty worktree before pulling
+		dirty, dirtyErr := IsWorktreeDirty(entry.Path, spec.Owner)
+		if dirtyErr != nil {
+			p.writeLog(spec.Name, "hydrate", "Dirty check failed for %s: %v", entry.Path, dirtyErr)
+			appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: dirty check failed: %v", filepath.Base(entry.Path), dirtyErr))
+			continue
+		}
+		if dirty {
+			p.writeLog(spec.Name, "hydrate", "Skipping %s: uncommitted changes", entry.Path)
+			appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: uncommitted changes", filepath.Base(entry.Path)))
+			continue
+		}
+
+		// Pull with fast-forward only (fetch + merge in one step).
+		// Using pull from the worktree context ensures proper ref resolution
+		// even when the bare clone lacks a fetch refspec.
+		pullErr := p.ffPull(entry.Path, targetBranch, spec.Owner)
+		if pullErr != nil {
+			errStr := pullErr.Error()
+			if strings.Contains(errStr, "Not possible to fast-forward") || strings.Contains(errStr, "fatal:") {
+				p.writeLog(spec.Name, "hydrate", "FF pull failed for %s: %v", entry.Path, pullErr)
+				appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: branch diverged, ff-only not possible", filepath.Base(entry.Path)))
+			} else {
+				p.writeLog(spec.Name, "hydrate", "Pull failed for %s: %v", entry.Path, pullErr)
+				appendEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: pull failed: %v", filepath.Base(entry.Path), pullErr))
+			}
+			continue
+		}
+
+		p.writeLog(spec.Name, "hydrate", "Hydrated %s (branch: %s)", entry.Path, targetBranch)
+		appendEvent(inst, EventHydrateCompleted, targetBranch)
+	}
+}
+
+// ffPull runs git -C <worktreePath> pull --ff-only origin <branch> as owner.
+// This combines fetch and fast-forward merge in one step, which works correctly
+// in worktrees backed by a bare clone (where remote tracking refs may not be
+// configured).
+func (p *Provisioner) ffPull(worktreePath, branch, owner string) error {
+	pullCmd := fmt.Sprintf("git -C %s pull --ff-only origin %s", worktreePath, branch)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", pullCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "pull", "--ff-only", "origin", branch)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // DeprovisionResult holds the outcome of a deprovision operation.

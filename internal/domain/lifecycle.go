@@ -18,6 +18,11 @@ const (
 	EventIDEReady   WorkspaceEvent = "ide_ready"
 	EventIDEStopped WorkspaceEvent = "ide_stopped"
 	EventIDEFailed  WorkspaceEvent = "ide_failed"
+
+	// Hydrate events — informational only; these do NOT affect workspace lifecycle status.
+	EventHydrateStarted   WorkspaceEvent = "hydrate_started"
+	EventHydrateCompleted WorkspaceEvent = "hydrate_completed"
+	EventHydrateSkipped   WorkspaceEvent = "hydrate_skipped"
 )
 
 // WorkspaceEventRecord is a single immutable event entry in the provisioning
@@ -48,18 +53,34 @@ func isIDEEvent(e WorkspaceEvent) bool {
 	return false
 }
 
+// isHydrateEvent returns true for informational hydration events.
+// These never affect workspace lifecycle status.
+func isHydrateEvent(e WorkspaceEvent) bool {
+	switch e {
+	case EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped:
+		return true
+	}
+	return false
+}
+
+// isInfoEvent returns true for any informational event that does not affect
+// workspace lifecycle status (IDE events and hydration events).
+func isInfoEvent(e WorkspaceEvent) bool {
+	return isIDEEvent(e) || isHydrateEvent(e)
+}
+
 // ResolveLifecycleStatus is a pure projection from an ordered event slice to a
 // lifecycle status. Given the same events it always returns the same result.
-// IDE events are informational and are skipped — workspace status is determined
-// solely by workspace/worktree events.
+// Informational events (IDE, hydration) are skipped — workspace status is
+// determined solely by workspace/worktree events.
 func ResolveLifecycleStatus(events []WorkspaceEventRecord) LifecycleStatus {
 	if len(events) == 0 {
 		return LifecyclePending
 	}
 
-	// Walk backwards to find the latest non-IDE event.
+	// Walk backwards to find the latest non-informational event.
 	for i := len(events) - 1; i >= 0; i-- {
-		if isIDEEvent(events[i].Event) {
+		if isInfoEvent(events[i].Event) {
 			continue
 		}
 		switch events[i].Event {
@@ -72,6 +93,6 @@ func ResolveLifecycleStatus(events []WorkspaceEventRecord) LifecycleStatus {
 		}
 	}
 
-	// All events are IDE events — treat as Pending (no workspace events yet).
+	// All events are informational — treat as Pending (no workspace events yet).
 	return LifecyclePending
 }

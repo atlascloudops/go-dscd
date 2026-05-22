@@ -746,6 +746,289 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 }
 
+// pushUpstreamCommit adds a new commit to upstream on the given branch.
+func pushUpstreamCommit(t *testing.T, dir, branch, filename, content string) {
+	t.Helper()
+	scratchClone := filepath.Join(dir, "scratch")
+	runGit(t, scratchClone, "checkout", branch)
+	os.WriteFile(filepath.Join(scratchClone, filename), []byte(content), 0644)
+	runGit(t, scratchClone, "add", ".")
+	runGit(t, scratchClone, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "update "+filename)
+	runGit(t, scratchClone, "push", "origin", branch)
+}
+
+func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	// Step 1: Initial provision
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("initial provision failed: %v", err)
+	}
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	}
+	initialCommit := inst.HeadCommit
+
+	// Step 2: Push a new commit upstream
+	pushUpstreamCommit(t, dir, "main", "update.txt", "new content\n")
+
+	// Step 3: Re-provision (idempotent path) — should hydrate and pull the new commit
+	inst2, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("idempotent provision failed: %v", err)
+	}
+	if inst2.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready after hydrate, got %s", inst2.Lifecycle)
+	}
+
+	// Verify HEAD advanced
+	if inst2.HeadCommit == initialCommit {
+		t.Fatal("expected HEAD to advance after hydration, but it stayed the same")
+	}
+	if inst2.HeadCommit == "" {
+		t.Fatal("expected non-empty head commit after hydration")
+	}
+
+	// Verify hydrate events are present
+	hasHydrateStarted := false
+	hasHydrateCompleted := false
+	for _, ev := range inst2.Events {
+		if ev.Event == EventHydrateStarted {
+			hasHydrateStarted = true
+		}
+		if ev.Event == EventHydrateCompleted {
+			hasHydrateCompleted = true
+		}
+	}
+	if !hasHydrateStarted {
+		t.Error("expected hydrate_started event")
+	}
+	if !hasHydrateCompleted {
+		t.Error("expected hydrate_completed event")
+	}
+}
+
+func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	// Initial provision
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("initial provision failed: %v", err)
+	}
+
+	// Dirty the worktree
+	os.WriteFile(filepath.Join(projectRoot, "DIRTY.txt"), []byte("dirty\n"), 0644)
+
+	// Push upstream change
+	pushUpstreamCommit(t, dir, "main", "update.txt", "new content\n")
+
+	// Re-provision — hydration should skip the dirty worktree
+	inst2, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("idempotent provision failed: %v", err)
+	}
+	if inst2.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst2.Lifecycle)
+	}
+
+	// Verify hydrate_skipped event with "uncommitted changes" detail
+	hasSkipped := false
+	for _, ev := range inst2.Events {
+		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "uncommitted changes") {
+			hasSkipped = true
+		}
+	}
+	if !hasSkipped {
+		t.Error("expected hydrate_skipped event with 'uncommitted changes' detail")
+	}
+}
+
+func TestHydrate_DivergedBranchSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	// Initial provision
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("initial provision failed: %v", err)
+	}
+
+	// Create a local commit that diverges from upstream
+	runGit(t, projectRoot, "-c", "user.name=Test", "-c", "user.email=t@t.com",
+		"commit", "--allow-empty", "-m", "local diverged commit")
+
+	// Push a different commit upstream
+	pushUpstreamCommit(t, dir, "main", "upstream-only.txt", "upstream\n")
+
+	// Re-provision — hydration should skip due to divergence
+	inst2, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("idempotent provision failed: %v", err)
+	}
+	if inst2.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready even with diverged branch, got %s", inst2.Lifecycle)
+	}
+
+	// Verify hydrate_skipped event with divergence detail
+	hasSkipped := false
+	for _, ev := range inst2.Events {
+		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "diverged") {
+			hasSkipped = true
+		}
+	}
+	if !hasSkipped {
+		t.Error("expected hydrate_skipped event with divergence detail")
+	}
+}
+
+func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+	addUpstreamBranch(t, dir, "feature-vpc", "vpc.tf", "# vpc\n")
+
+	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	defaultRoot := filepath.Join(repoRoot, "default")
+	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	// Provision default
+	defaultSpec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
+		ProjectRoot:  defaultRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+	_, err := p.Provision(store, defaultSpec)
+	if err != nil {
+		t.Fatalf("default provision failed: %v", err)
+	}
+
+	// Provision feature worktree
+	featureSpec := WorkspaceSpec{
+		Name:         "myrepo/feature-vpc",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
+		ProjectRoot:  featureRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "feature-vpc",
+		IsDefault:    false,
+		Owner:        currentUser(),
+	}
+	_, err = p.Provision(store, featureSpec)
+	if err != nil {
+		t.Fatalf("feature provision failed: %v", err)
+	}
+
+	// Record feature worktree HEAD before re-provision of default
+	featureHead := ResolveHeadCommit(featureRoot, currentUser())
+
+	// Push commits to both branches
+	pushUpstreamCommit(t, dir, "main", "main-update.txt", "main update\n")
+	// Switch back to main in scratch before pushing to feature
+	scratchClone := filepath.Join(dir, "scratch")
+	runGit(t, scratchClone, "checkout", "feature-vpc")
+	os.WriteFile(filepath.Join(scratchClone, "vpc-update.tf"), []byte("# vpc update\n"), 0644)
+	runGit(t, scratchClone, "add", ".")
+	runGit(t, scratchClone, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "vpc update")
+	runGit(t, scratchClone, "push", "origin", "feature-vpc")
+
+	// Re-provision default — hydration should pull main but NOT touch feature-vpc
+	inst, err := p.Provision(store, defaultSpec)
+	if err != nil {
+		t.Fatalf("re-provision failed: %v", err)
+	}
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	}
+
+	// Feature worktree HEAD should be unchanged
+	featureHeadAfter := ResolveHeadCommit(featureRoot, currentUser())
+	if featureHeadAfter != featureHead {
+		t.Errorf("feature worktree HEAD changed during default hydration: %s -> %s", featureHead, featureHeadAfter)
+	}
+}
+
 func TestResolveDefaultBranch_RealGit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

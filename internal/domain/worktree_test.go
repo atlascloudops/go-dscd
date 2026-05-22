@@ -102,6 +102,60 @@ branch refs/heads/main
 	}
 }
 
+func TestParseWorktreeEntries_Basic(t *testing.T) {
+	bareRoot := "/home/jperez/code/github.com/atlasops/infra/.bare"
+	output := `worktree /home/jperez/code/github.com/atlasops/infra/.bare
+HEAD abc123
+branch refs/heads/main
+bare
+
+worktree /home/jperez/code/github.com/atlasops/infra/default
+HEAD abc123
+branch refs/heads/main
+
+worktree /home/jperez/code/github.com/atlasops/infra/.worktrees/feature-vpc
+HEAD def456
+branch refs/heads/feature-vpc
+
+`
+
+	entries := parseWorktreeEntries(output, bareRoot)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Path != "/home/jperez/code/github.com/atlasops/infra/default" {
+		t.Errorf("entries[0].Path = %q", entries[0].Path)
+	}
+	if entries[0].Branch != "main" {
+		t.Errorf("entries[0].Branch = %q, want main", entries[0].Branch)
+	}
+	if entries[1].Path != "/home/jperez/code/github.com/atlasops/infra/.worktrees/feature-vpc" {
+		t.Errorf("entries[1].Path = %q", entries[1].Path)
+	}
+	if entries[1].Branch != "feature-vpc" {
+		t.Errorf("entries[1].Branch = %q, want feature-vpc", entries[1].Branch)
+	}
+}
+
+func TestParseWorktreeEntries_Empty(t *testing.T) {
+	entries := parseWorktreeEntries("", "/tmp/.bare")
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries for empty output, got %d", len(entries))
+	}
+}
+
+func TestParseWorktreeEntries_OnlyBare(t *testing.T) {
+	output := `worktree /tmp/repo/.bare
+HEAD abc123
+bare
+
+`
+	entries := parseWorktreeEntries(output, "/tmp/repo/.bare")
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
 func TestListWorktrees_RealGit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
