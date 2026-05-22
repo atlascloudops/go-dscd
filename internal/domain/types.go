@@ -34,14 +34,16 @@ type VCSTarget struct {
 
 // WorkspaceInstance is the realized state — what actually exists on the pod.
 type WorkspaceInstance struct {
-	Spec            WorkspaceSpec  `json:"spec"`
-	State           WorkspaceState `json:"state"`
-	Status          string         `json:"status"`
-	HeadCommit      string         `json:"head_commit,omitempty"`
-	CredentialHost  string         `json:"credential_host"`
-	ProvisionedAt   *time.Time     `json:"provisioned_at,omitempty"`
-	LastError       *string        `json:"last_error,omitempty"`
-	LastSyncedAt    *time.Time     `json:"last_synced_at,omitempty"`   // renamed from last_reconcile_at
+	Spec            WorkspaceSpec          `json:"spec"`
+	State           WorkspaceState         `json:"state"`
+	Status          string                 `json:"status"`
+	Events          []WorkspaceEventRecord `json:"events,omitempty"`
+	Lifecycle       LifecycleStatus        `json:"lifecycle,omitempty"`
+	HeadCommit      string                 `json:"head_commit,omitempty"`
+	CredentialHost  string                 `json:"credential_host"`
+	ProvisionedAt   *time.Time             `json:"provisioned_at,omitempty"`
+	LastError       *string                `json:"last_error,omitempty"`
+	LastSyncedAt    *time.Time             `json:"last_synced_at,omitempty"`   // renamed from last_reconcile_at
 	// Internal fields — used for status derivation, excluded from JSON output.
 	CloneExists     bool `json:"-"`
 	CredentialFresh bool `json:"-"`
