@@ -18,11 +18,14 @@ type IDEContext struct {
 	Port         int
 }
 
-// IDEState is the serializable snapshot of an IDE adapter attached to a workspace.
-type IDEState struct {
-	AdapterName string `json:"adapter_name"`
-	Port        int    `json:"port"`
-	Active      bool   `json:"active"`
+// IDEInstance is the persisted lifecycle object for an IDE attached to a workspace.
+// It carries its own event stream and projected status, mirroring the workspace
+// lifecycle pattern at the IDE level.
+type IDEInstance struct {
+	Adapter string           `json:"adapter"`
+	Port    int              `json:"port"`
+	Events  []IDEEventRecord `json:"events,omitempty"`
+	Status  Status           `json:"status,omitempty"`
 }
 
 // IDEAdapter is the interface for managing an IDE process as an ephemeral

@@ -48,9 +48,13 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 0)
 			}
 
+			// Derive credential status from the most recent git_credentials_exist event
 			credStatus := "stale"
-			if inst.CredentialFresh {
-				credStatus = "fresh"
+			for i := len(inst.Events) - 1; i >= 0; i-- {
+				if inst.Events[i].Event == domain.EventGitCredentialsExist {
+					credStatus = "fresh"
+					break
+				}
 			}
 
 			fmt.Fprintf(os.Stdout, "Name:            %s\n", inst.Spec.Name)
@@ -67,11 +71,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				fmt.Fprintf(os.Stdout, "Worktrees:       %s\n", strings.Join(inspectData.Worktrees, ", "))
 			}
 			if inst.IDE != nil {
-				activeStr := "inactive"
-				if inst.IDE.Active {
-					activeStr = "active"
-				}
-				fmt.Fprintf(os.Stdout, "IDE:             %s (port %d, %s)\n", inst.IDE.AdapterName, inst.IDE.Port, activeStr)
+				fmt.Fprintf(os.Stdout, "IDE:             %s (port %d, %s)\n", inst.IDE.Adapter, inst.IDE.Port, inst.IDE.Status)
 			}
 			if len(inst.Events) > 0 {
 				fmt.Fprintf(os.Stdout, "Events:\n")

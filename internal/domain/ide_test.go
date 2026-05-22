@@ -239,41 +239,52 @@ func TestCodeServerAdapter_ImplementsInterface(t *testing.T) {
 	var _ IDEAdapter = (*CodeServerAdapter)(nil)
 }
 
-func TestIDEState_JSONRoundTrip(t *testing.T) {
-	state := IDEState{
-		AdapterName: "openvscode-server",
-		Port:        9100,
-		Active:      true,
+func TestIDEInstance_JSONRoundTrip(t *testing.T) {
+	instance := IDEInstance{
+		Adapter: "openvscode-server",
+		Port:    9100,
+		Events: []IDEEventRecord{
+			{Event: IDEEventStarted, Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
+			{Event: IDEEventReady, Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
+		},
+		Status: StatusReady,
 	}
 
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(instance)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got IDEState
+	var got IDEInstance
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if got.AdapterName != state.AdapterName {
-		t.Errorf("adapter_name: expected %q, got %q", state.AdapterName, got.AdapterName)
+	if got.Adapter != instance.Adapter {
+		t.Errorf("adapter: expected %q, got %q", instance.Adapter, got.Adapter)
 	}
-	if got.Port != state.Port {
-		t.Errorf("port: expected %d, got %d", state.Port, got.Port)
+	if got.Port != instance.Port {
+		t.Errorf("port: expected %d, got %d", instance.Port, got.Port)
 	}
-	if got.Active != state.Active {
-		t.Errorf("active: expected %v, got %v", state.Active, got.Active)
+	if len(got.Events) != 2 {
+		t.Fatalf("events: expected 2, got %d", len(got.Events))
+	}
+	if got.Status != StatusReady {
+		t.Errorf("status: expected %q, got %q", StatusReady, got.Status)
 	}
 }
 
-func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
+func TestWorkspaceInstance_IDEInstanceJSON(t *testing.T) {
 	inst := WorkspaceInstance{
 		Status: StatusPending,
-		IDE: &IDEState{
-			AdapterName: "openvscode-server",
-			Port:        9100,
-			Active:      true,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Events: []IDEEventRecord{
+				{Event: IDEEventStarted, Timestamp: time.Now().UTC().Truncate(time.Second)},
+				{Event: IDEEventReady, Timestamp: time.Now().UTC().Truncate(time.Second)},
+			},
+			Status: StatusReady,
 		},
 	}
 
@@ -293,12 +304,18 @@ func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
 	if got.IDE.Port != 9100 {
 		t.Errorf("IDE.Port: expected 9100, got %d", got.IDE.Port)
 	}
-	if got.IDE.AdapterName != "openvscode-server" {
-		t.Errorf("IDE.AdapterName: expected openvscode-server, got %q", got.IDE.AdapterName)
+	if got.IDE.Adapter != "openvscode-server" {
+		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", got.IDE.Adapter)
+	}
+	if got.IDE.Status != StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, got.IDE.Status)
+	}
+	if len(got.IDE.Events) != 2 {
+		t.Errorf("IDE.Events: expected 2, got %d", len(got.IDE.Events))
 	}
 }
 
-func TestWorkspaceInstance_IDEStateOmittedWhenNil(t *testing.T) {
+func TestWorkspaceInstance_IDEInstanceOmittedWhenNil(t *testing.T) {
 	inst := WorkspaceInstance{
 		Status: StatusPending,
 	}
@@ -364,23 +381,23 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 		t.Fatalf("provision failed: %v", err)
 	}
 
-	// IDE should be started and active
+	// IDE should be started and ready
 	if inst.IDE == nil {
-		t.Fatal("expected IDE state to be set")
+		t.Fatal("expected IDE instance to be set")
 	}
-	if !inst.IDE.Active {
-		t.Error("expected IDE to be active")
+	if inst.IDE.Status != StatusReady {
+		t.Errorf("expected IDE status ready, got %s", inst.IDE.Status)
 	}
 	if inst.IDE.Port < 9100 || inst.IDE.Port > 9199 {
 		t.Errorf("expected port in range 9100-9199, got %d", inst.IDE.Port)
 	}
-	if inst.IDE.AdapterName != "openvscode-server" {
-		t.Errorf("expected adapter name 'openvscode-server', got %q", inst.IDE.AdapterName)
+	if inst.IDE.Adapter != "openvscode-server" {
+		t.Errorf("expected adapter 'openvscode-server', got %q", inst.IDE.Adapter)
 	}
 
 	// Should have emitted ide_started and ide_ready events in the IDE event stream
 	hasStarted, hasReady := false, false
-	for _, ev := range inst.IDEEvents {
+	for _, ev := range inst.IDE.Events {
 		if ev.Event == IDEEventStarted {
 			hasStarted = true
 		}
@@ -444,17 +461,17 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 		t.Fatalf("provision should succeed even when IDE fails: %v", err)
 	}
 
-	// IDE state should exist but be inactive
+	// IDE instance should exist with failed status
 	if inst.IDE == nil {
-		t.Fatal("expected IDE state to be set even on failure")
+		t.Fatal("expected IDE instance to be set even on failure")
 	}
-	if inst.IDE.Active {
-		t.Error("expected IDE to be inactive after failure")
+	if inst.IDE.Status != StatusFailed {
+		t.Errorf("expected IDE status failed, got %s", inst.IDE.Status)
 	}
 
 	// Should have ide_failed event in the IDE event stream
 	hasFailed := false
-	for _, ev := range inst.IDEEvents {
+	for _, ev := range inst.IDE.Events {
 		if ev.Event == IDEEventFailed {
 			hasFailed = true
 		}
@@ -495,11 +512,7 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 	}
 
 	if inst.IDE != nil {
-		t.Error("expected no IDE state when IDE not requested")
-	}
-
-	if len(inst.IDEEvents) > 0 {
-		t.Errorf("expected no IDE events when IDE not requested, got %d", len(inst.IDEEvents))
+		t.Error("expected no IDE instance when IDE not requested")
 	}
 }
 
@@ -558,12 +571,12 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
+		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
-		IDE: &IDEState{
-			AdapterName: "openvscode-server",
-			Port:        9100,
-			Active:      true,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Status:  StatusReady,
 		},
 	}
 
@@ -573,9 +586,9 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// IDE should still be active
-	if !store.instances["ws1"].IDE.Active {
-		t.Error("expected IDE to remain active after healthy check")
+	// IDE should still be ready
+	if store.instances["ws1"].IDE.Status != StatusReady {
+		t.Errorf("expected IDE to remain ready after healthy check, got %s", store.instances["ws1"].IDE.Status)
 	}
 }
 
@@ -591,12 +604,12 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
+		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
-		IDE: &IDEState{
-			AdapterName: "openvscode-server",
-			Port:        9100,
-			Active:      true,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Status:  StatusReady,
 		},
 	}
 
@@ -606,13 +619,13 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// IDE should now be inactive
-	if store.instances["ws1"].IDE.Active {
-		t.Error("expected IDE to be marked inactive")
+	// IDE should now be pending (stopped)
+	if store.instances["ws1"].IDE.Status != StatusPending {
+		t.Errorf("expected IDE status pending after stop, got %s", store.instances["ws1"].IDE.Status)
 	}
 
 	// Should have emitted ide_stopped event in the IDE event stream
-	ideEvents := store.instances["ws1"].IDEEvents
+	ideEvents := store.instances["ws1"].IDE.Events
 	if len(ideEvents) == 0 {
 		t.Fatal("expected IDE events")
 	}
@@ -653,10 +666,10 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 			Owner:        "user",
 		},
 		Status: StatusReady,
-		IDE: &IDEState{
-			AdapterName: "openvscode-server",
-			Port:        9100,
-			Active:      true,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Status:  StatusReady,
 		},
 	}
 

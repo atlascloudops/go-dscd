@@ -86,6 +86,79 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRoundTrip_IDEInstance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	s := NewFileStore(path)
+
+	ts := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	instances := map[string]*domain.WorkspaceInstance{
+		"ws-ide": {
+			Spec: domain.WorkspaceSpec{
+				Name: "ws-ide",
+				VCS: domain.VCSTarget{
+					Host:     "github.com",
+					Repo:     "org/repo1",
+					Branch:   "main",
+					CloneURL: "https://github.com/org/repo1.git",
+				},
+				ProjectRoot:  "/home/user/code/repo1/default",
+				RepoRoot:     "/home/user/code/repo1",
+				BareRoot:     "/home/user/code/repo1/.bare",
+				WorktreeName: "default",
+				Owner:        "user",
+				IDE:          &domain.IDESpecConfig{Adapter: "openvscode-server"},
+			},
+			Status:         domain.StatusReady,
+			CredentialHost: "github.com",
+			IDE: &domain.IDEInstance{
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Events: []domain.IDEEventRecord{
+					{Event: domain.IDEEventStarted, Timestamp: ts, Detail: "port=9100"},
+					{Event: domain.IDEEventReady, Timestamp: ts, Detail: "port=9100"},
+				},
+				Status: domain.StatusReady,
+			},
+		},
+	}
+
+	if err := s.Save(instances); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ws := loaded["ws-ide"]
+	if ws == nil {
+		t.Fatal("expected ws-ide in loaded instances")
+	}
+	if ws.IDE == nil {
+		t.Fatal("expected IDE instance after round-trip")
+	}
+	if ws.IDE.Adapter != "openvscode-server" {
+		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", ws.IDE.Adapter)
+	}
+	if ws.IDE.Port != 9100 {
+		t.Errorf("IDE.Port: expected 9100, got %d", ws.IDE.Port)
+	}
+	if len(ws.IDE.Events) != 2 {
+		t.Fatalf("IDE.Events: expected 2, got %d", len(ws.IDE.Events))
+	}
+	if ws.IDE.Events[0].Event != domain.IDEEventStarted {
+		t.Errorf("IDE.Events[0]: expected %q, got %q", domain.IDEEventStarted, ws.IDE.Events[0].Event)
+	}
+	if ws.IDE.Events[1].Event != domain.IDEEventReady {
+		t.Errorf("IDE.Events[1]: expected %q, got %q", domain.IDEEventReady, ws.IDE.Events[1].Event)
+	}
+	if ws.IDE.Status != domain.StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", domain.StatusReady, ws.IDE.Status)
+	}
+}
+
 func TestLoadNonexistent(t *testing.T) {
 	s := NewFileStore(filepath.Join(t.TempDir(), "missing.json"))
 	instances, err := s.Load()

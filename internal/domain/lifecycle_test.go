@@ -319,14 +319,18 @@ func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	}
 }
 
-func TestWorkspaceInstance_IDEEventsJSON(t *testing.T) {
+func TestWorkspaceInstance_IDEInstanceEventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	inst := WorkspaceInstance{
-		Status:    StatusReady,
-		IDEStatus: StatusReady,
-		IDEEvents: []IDEEventRecord{
-			{Event: IDEEventStarted, Timestamp: ts},
-			{Event: IDEEventReady, Timestamp: ts},
+		Status: StatusReady,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Events: []IDEEventRecord{
+				{Event: IDEEventStarted, Timestamp: ts},
+				{Event: IDEEventReady, Timestamp: ts},
+			},
+			Status: StatusReady,
 		},
 	}
 
@@ -340,11 +344,14 @@ func TestWorkspaceInstance_IDEEventsJSON(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if len(got.IDEEvents) != 2 {
-		t.Fatalf("expected 2 IDE events, got %d", len(got.IDEEvents))
+	if got.IDE == nil {
+		t.Fatal("IDE should not be nil after round-trip")
 	}
-	if got.IDEStatus != StatusReady {
-		t.Errorf("ide_status: expected %q, got %q", StatusReady, got.IDEStatus)
+	if len(got.IDE.Events) != 2 {
+		t.Fatalf("expected 2 IDE events, got %d", len(got.IDE.Events))
+	}
+	if got.IDE.Status != StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, got.IDE.Status)
 	}
 }
 
@@ -356,7 +363,7 @@ func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// Events, Status, IDEEvents, IDEStatus should be omitted from JSON when empty/zero
+	// Events, Status, IDE should be omitted from JSON when empty/zero/nil
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal raw: %v", err)
@@ -367,11 +374,8 @@ func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 	if _, ok := raw["status"]; ok {
 		t.Error("expected status to be omitted from JSON when empty")
 	}
-	if _, ok := raw["ide_events"]; ok {
-		t.Error("expected ide_events to be omitted from JSON when nil")
-	}
-	if _, ok := raw["ide_status"]; ok {
-		t.Error("expected ide_status to be omitted from JSON when empty")
+	if _, ok := raw["ide"]; ok {
+		t.Error("expected ide to be omitted from JSON when nil")
 	}
 }
 

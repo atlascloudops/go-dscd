@@ -35,15 +35,12 @@ type WorkspaceInstance struct {
 	Spec            WorkspaceSpec          `json:"spec"`
 	Events          []WorkspaceEventRecord `json:"events,omitempty"`
 	Status          Status                 `json:"status,omitempty"`
-	IDEEvents       []IDEEventRecord       `json:"ide_events,omitempty"`
-	IDEStatus       Status                 `json:"ide_status,omitempty"`
-	IDE             *IDEState              `json:"ide,omitempty"`
+	IDE             *IDEInstance            `json:"ide,omitempty"`
 	HeadCommit      string                 `json:"head_commit,omitempty"`
 	CredentialHost  string                 `json:"credential_host"`
 	ProvisionedAt   *time.Time             `json:"provisioned_at,omitempty"`
 	LastError       *string                `json:"last_error,omitempty"`
 	LastSyncedAt    *time.Time             `json:"last_synced_at,omitempty"`
-	CredentialFresh bool                   `json:"-"`
 }
 
 // appendEvent appends a workspace event record and keeps Status in sync.
@@ -57,15 +54,16 @@ func appendEvent(inst *WorkspaceInstance, event WorkspaceEvent, detail string) {
 	inst.Status = resolver.Resolve(inst.Events)
 }
 
-// appendIDEEvent appends an IDE event record and keeps IDEStatus in sync.
-func appendIDEEvent(inst *WorkspaceInstance, event IDEEvent, detail string) {
-	inst.IDEEvents = append(inst.IDEEvents, IDEEventRecord{
+// appendIDEEvent appends an IDE event record to an IDEInstance and re-projects
+// its Status via IDEStatusResolver.
+func appendIDEEvent(ide *IDEInstance, event IDEEvent, detail string) {
+	ide.Events = append(ide.Events, IDEEventRecord{
 		Event:     event,
 		Timestamp: time.Now().UTC(),
 		Detail:    detail,
 	})
 	var resolver IDEStatusResolver
-	inst.IDEStatus = resolver.Resolve(inst.IDEEvents)
+	ide.Status = resolver.Resolve(ide.Events)
 }
 
 // DisplayStatus returns a human-readable status string derived from Status.

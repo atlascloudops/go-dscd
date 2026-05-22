@@ -67,13 +67,11 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				}
 			}
 
-			// Check credentials
+			// Check credentials — emit informational event when found
 			credPath := filepath.Join("/home", inst.Spec.Owner, ".config/dsc/credentials/git-credentials")
 			data, credErr := os.ReadFile(credPath)
 			if credErr == nil && strings.Contains(string(data), inst.Spec.VCS.Host) {
-				inst.CredentialFresh = true
-			} else {
-				inst.CredentialFresh = false
+				appendEvent(inst, EventGitCredentialsExist, inst.Spec.VCS.Host)
 			}
 
 			// Refresh head commit
@@ -91,11 +89,10 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 					WorktreeName: inst.Spec.WorktreeName,
 					Port:         inst.IDE.Port,
 				}
-				wasActive := inst.IDE.Active
+				wasReady := inst.IDE.Status == StatusReady
 				err := s.ideAdapter.HealthCheck(ctx)
-				inst.IDE.Active = (err == nil)
-				if wasActive && !inst.IDE.Active {
-					appendIDEEvent(inst, IDEEventStopped, "health check failed")
+				if err != nil && wasReady {
+					appendIDEEvent(inst.IDE, IDEEventStopped, "health check failed")
 					s.writeLog(name, "sync", "IDE became inactive")
 				}
 			}

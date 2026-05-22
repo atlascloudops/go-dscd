@@ -64,7 +64,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 			}
 			appendEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
-		inst.CredentialFresh = p.checkCredentialFresh(spec)
+		p.checkCredentials(inst, spec)
 		// Hydrate before resolving head commit so it reflects the latest state
 		if dirExists(spec.BareRoot) {
 			p.hydrate(inst, spec)
@@ -73,7 +73,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 
 		// IDE: if requested but not running, start; if running, health-check
 		if spec.IDE != nil && p.IDEAdapter != nil {
-			if inst.IDE == nil || !inst.IDE.Active {
+			if inst.IDE == nil || inst.IDE.Status != StatusReady {
 				p.startIDE(inst, spec)
 			} else {
 				p.healthCheckIDE(inst)
@@ -148,7 +148,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 
 	p.writeLog(spec.Name, "provision", "Bare clone + default worktree complete")
 
-	inst.CredentialFresh = p.checkCredentialFresh(spec)
+	p.checkCredentials(inst, spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
@@ -225,7 +225,7 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	p.writeLog(spec.Name, "provision", "Worktree add complete")
 
-	inst.CredentialFresh = p.checkCredentialFresh(spec)
+	p.checkCredentials(inst, spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
@@ -248,9 +248,19 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 	key := PortKey(spec.Owner, spec.WorktreeName)
 	port, err := p.PortAllocator.Allocate(key)
 	if err != nil {
-		appendIDEEvent(inst, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
+		// Create a minimal IDEInstance to record the failure event
+		if inst.IDE == nil {
+			inst.IDE = &IDEInstance{Adapter: p.IDEAdapter.Name(), Port: 0}
+		}
+		appendIDEEvent(inst.IDE, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
 		p.writeLog(spec.Name, "ide", "Port allocation failed: %v", err)
 		return
+	}
+
+	// Initialise (or re-initialise) the IDEInstance for this adapter + port
+	inst.IDE = &IDEInstance{
+		Adapter: p.IDEAdapter.Name(),
+		Port:    port,
 	}
 
 	ctx := IDEContext{
@@ -260,24 +270,14 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 		Port:         port,
 	}
 
-	appendIDEEvent(inst, IDEEventStarted, fmt.Sprintf("port=%d", port))
+	appendIDEEvent(inst.IDE, IDEEventStarted, fmt.Sprintf("port=%d", port))
 	if err := p.IDEAdapter.Start(ctx); err != nil {
-		appendIDEEvent(inst, IDEEventFailed, err.Error())
-		inst.IDE = &IDEState{
-			AdapterName: p.IDEAdapter.Name(),
-			Port:        port,
-			Active:      false,
-		}
+		appendIDEEvent(inst.IDE, IDEEventFailed, err.Error())
 		p.writeLog(spec.Name, "ide", "Start failed: %v", err)
 		return
 	}
 
-	appendIDEEvent(inst, IDEEventReady, fmt.Sprintf("port=%d", port))
-	inst.IDE = &IDEState{
-		AdapterName: p.IDEAdapter.Name(),
-		Port:        port,
-		Active:      true,
-	}
+	appendIDEEvent(inst.IDE, IDEEventReady, fmt.Sprintf("port=%d", port))
 	p.writeLog(spec.Name, "ide", "Started on port %d", port)
 }
 
@@ -303,12 +303,12 @@ func (p *Provisioner) stopIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 		p.writeLog(spec.Name, "ide", "Port release failed: %v", err)
 	}
 
-	appendIDEEvent(inst, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
+	appendIDEEvent(inst.IDE, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
 	inst.IDE = nil
 	p.writeLog(spec.Name, "ide", "Stopped")
 }
 
-// healthCheckIDE checks if a running IDE is still healthy, updating Active state.
+// healthCheckIDE checks if a running IDE is still healthy, updating status via events.
 func (p *Provisioner) healthCheckIDE(inst *WorkspaceInstance) {
 	if inst.IDE == nil || p.IDEAdapter == nil {
 		return
@@ -322,11 +322,10 @@ func (p *Provisioner) healthCheckIDE(inst *WorkspaceInstance) {
 	}
 
 	err := p.IDEAdapter.HealthCheck(ctx)
-	wasActive := inst.IDE.Active
-	inst.IDE.Active = (err == nil)
+	wasReady := inst.IDE.Status == StatusReady
 
-	if wasActive && !inst.IDE.Active {
-		appendIDEEvent(inst, IDEEventStopped, "health check failed")
+	if err != nil && wasReady {
+		appendIDEEvent(inst.IDE, IDEEventStopped, "health check failed")
 		p.writeLog(inst.Spec.Name, "ide", "Health check failed, marking inactive")
 	}
 }
@@ -885,13 +884,18 @@ func (p *Provisioner) persistState(store StateStore, name string, inst *Workspac
 	})
 }
 
-func (p *Provisioner) checkCredentialFresh(spec WorkspaceSpec) bool {
+// checkCredentials emits EventGitCredentialsExist when the credential file
+// contains the VCS host. The event is informational — it does not affect
+// workspace status projection.
+func (p *Provisioner) checkCredentials(inst *WorkspaceInstance, spec WorkspaceSpec) {
 	credPath := filepath.Join("/home", spec.Owner, ".config/dsc/credentials/git-credentials")
 	data, err := os.ReadFile(credPath)
 	if err != nil {
-		return false
+		return
 	}
-	return strings.Contains(string(data), spec.VCS.Host)
+	if strings.Contains(string(data), spec.VCS.Host) {
+		appendEvent(inst, EventGitCredentialsExist, spec.VCS.Host)
+	}
 }
 
 func (p *Provisioner) writeLog(name, phase, format string, args ...interface{}) {
