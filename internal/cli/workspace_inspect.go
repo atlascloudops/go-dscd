@@ -66,6 +66,13 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			if len(inspectData.Worktrees) > 0 {
 				fmt.Fprintf(os.Stdout, "Worktrees:       %s\n", strings.Join(inspectData.Worktrees, ", "))
 			}
+			if inst.IDE != nil {
+				activeStr := "inactive"
+				if inst.IDE.Active {
+					activeStr = "active"
+				}
+				fmt.Fprintf(os.Stdout, "IDE:             %s (port %d, %s)\n", inst.IDE.AdapterName, inst.IDE.Port, activeStr)
+			}
 			if len(inst.Events) > 0 {
 				fmt.Fprintf(os.Stdout, "Events:\n")
 				start := 0

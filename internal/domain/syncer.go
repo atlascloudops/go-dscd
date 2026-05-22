@@ -15,12 +15,21 @@ type SyncReport struct {
 }
 
 type WorkspaceSyncer struct {
-	store  StateStore
-	logDir string
+	store         StateStore
+	logDir        string
+	ideAdapter    IDEAdapter
+	portAllocator *PortAllocator
 }
 
 func NewSyncer(store StateStore, logDir string) *WorkspaceSyncer {
 	return &WorkspaceSyncer{store: store, logDir: logDir}
+}
+
+// WithIDE configures the syncer to health-check IDE instances during sync.
+func (s *WorkspaceSyncer) WithIDE(adapter IDEAdapter, pa *PortAllocator) *WorkspaceSyncer {
+	s.ideAdapter = adapter
+	s.portAllocator = pa
+	return s
 }
 
 func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
@@ -72,6 +81,23 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				inst.HeadCommit = ResolveHeadCommit(inst.Spec.ProjectRoot, inst.Spec.Owner)
 			} else {
 				inst.HeadCommit = ""
+			}
+
+			// IDE health-check
+			if inst.IDE != nil && s.ideAdapter != nil {
+				ctx := IDEContext{
+					Owner:        inst.Spec.Owner,
+					WorktreePath: inst.Spec.ProjectRoot,
+					WorktreeName: inst.Spec.WorktreeName,
+					Port:         inst.IDE.Port,
+				}
+				wasActive := inst.IDE.Active
+				err := s.ideAdapter.HealthCheck(ctx)
+				inst.IDE.Active = (err == nil)
+				if wasActive && !inst.IDE.Active {
+					appendEvent(inst, EventIDEStopped, "health check failed")
+					s.writeLog(name, "sync", "IDE became inactive")
+				}
 			}
 
 			inst.LastSyncedAt = &now

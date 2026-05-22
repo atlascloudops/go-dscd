@@ -19,7 +19,9 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string) *cobra.C
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			provisioner := &domain.Provisioner{
-				LogDir: logDir,
+				LogDir:        logDir,
+				IDEAdapter:    domain.NewCodeServerAdapter(),
+				PortAllocator: domain.NewPortAllocator(defaultPortFile),
 			}
 
 			var result *domain.DeprovisionResult

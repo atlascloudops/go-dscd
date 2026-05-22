@@ -16,7 +16,9 @@ func newWorkspacePruneCmd(store domain.StateStore, logDir string) *cobra.Command
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoName := args[0]
 			provisioner := &domain.Provisioner{
-				LogDir: logDir,
+				LogDir:        logDir,
+				IDEAdapter:    domain.NewCodeServerAdapter(),
+				PortAllocator: domain.NewPortAllocator(defaultPortFile),
 			}
 
 			result, err := provisioner.Prune(store, repoName)

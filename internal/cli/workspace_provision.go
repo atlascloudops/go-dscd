@@ -26,7 +26,9 @@ func newWorkspaceProvisionCmd(store domain.StateStore, logDir string) *cobra.Com
 			}
 
 			provisioner := &domain.Provisioner{
-				LogDir: logDir,
+				LogDir:        logDir,
+				IDEAdapter:    domain.NewCodeServerAdapter(),
+				PortAllocator: domain.NewPortAllocator(defaultPortFile),
 			}
 
 			inst, err := provisioner.Provision(store, spec)

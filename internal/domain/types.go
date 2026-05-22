@@ -12,7 +12,14 @@ type WorkspaceSpec struct {
 	BareRoot     string    `json:"bare_root"`     // path to .bare/
 	WorktreeName string    `json:"worktree_name"` // "default" or branch-derived
 	IsDefault    bool      `json:"is_default"`    // true = bare clone + first worktree
-	Owner        string    `json:"owner"`
+	Owner        string         `json:"owner"`
+	IDE          *IDESpecConfig `json:"ide,omitempty"`
+}
+
+// IDESpecConfig is the optional IDE configuration on a workspace spec.
+// When set, provisioning will start an IDE adapter after worktree creation.
+type IDESpecConfig struct {
+	Adapter string `json:"adapter"` // e.g. "openvscode-server"
 }
 
 type VCSTarget struct {

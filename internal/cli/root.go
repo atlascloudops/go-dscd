@@ -11,6 +11,7 @@ import (
 const (
 	defaultStatePath = "/opt/dsc/var/dscd/state.json"
 	defaultLogDir    = "/opt/dsc/var/dscd/logs"
+	defaultPortFile  = "/opt/dsc/var/dscd/ports.json"
 )
 
 var jsonOutput bool

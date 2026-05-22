@@ -10,8 +10,10 @@ import (
 )
 
 type Provisioner struct {
-	StorePath string // path to state.json
-	LogDir    string // /opt/dsc/var/dscd/logs/
+	StorePath     string         // path to state.json
+	LogDir        string         // /opt/dsc/var/dscd/logs/
+	IDEAdapter    IDEAdapter     // optional; nil skips IDE phase
+	PortAllocator *PortAllocator // optional; nil skips IDE phase
 }
 
 // Provision creates a workspace using dual-mode provisioning:
@@ -19,6 +21,9 @@ type Provisioner struct {
 //   - If bare clone exists (or is created): add worktree from existing bare
 func (p *Provisioner) Provision(store StateStore, spec WorkspaceSpec) (*WorkspaceInstance, error) {
 	if err := validateSpec(spec); err != nil {
+		return nil, err
+	}
+	if err := p.resolveIDEAdapter(spec); err != nil {
 		return nil, err
 	}
 
@@ -65,6 +70,16 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 			p.hydrate(inst, spec)
 		}
 		inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
+
+		// IDE: if requested but not running, start; if running, health-check
+		if spec.IDE != nil && p.IDEAdapter != nil {
+			if inst.IDE == nil || !inst.IDE.Active {
+				p.startIDE(inst, spec)
+			} else {
+				p.healthCheckIDE(inst)
+			}
+		}
+
 		instances[spec.Name] = inst
 		return store.Save(instances)
 	}); err != nil {
@@ -136,6 +151,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
+	p.startIDE(inst, spec)
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
 		return nil, err
@@ -212,6 +228,7 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
+	p.startIDE(inst, spec)
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
 		return nil, err
@@ -219,6 +236,120 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
 	return inst, nil
+}
+
+// startIDE allocates a port, starts the IDE adapter, and updates instance state.
+// IDE failures are non-fatal — events are emitted but lifecycle stays Ready.
+func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
+	if spec.IDE == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
+		return
+	}
+
+	key := PortKey(spec.Owner, spec.WorktreeName)
+	port, err := p.PortAllocator.Allocate(key)
+	if err != nil {
+		appendEvent(inst, EventIDEFailed, fmt.Sprintf("port allocation: %v", err))
+		p.writeLog(spec.Name, "ide", "Port allocation failed: %v", err)
+		return
+	}
+
+	ctx := IDEContext{
+		Owner:        spec.Owner,
+		WorktreePath: spec.ProjectRoot,
+		WorktreeName: spec.WorktreeName,
+		Port:         port,
+	}
+
+	appendEvent(inst, EventIDEStarted, fmt.Sprintf("port=%d", port))
+	if err := p.IDEAdapter.Start(ctx); err != nil {
+		appendEvent(inst, EventIDEFailed, err.Error())
+		inst.IDE = &IDEState{
+			AdapterName: p.IDEAdapter.Name(),
+			Port:        port,
+			Active:      false,
+		}
+		p.writeLog(spec.Name, "ide", "Start failed: %v", err)
+		return
+	}
+
+	appendEvent(inst, EventIDEReady, fmt.Sprintf("port=%d", port))
+	inst.IDE = &IDEState{
+		AdapterName: p.IDEAdapter.Name(),
+		Port:        port,
+		Active:      true,
+	}
+	p.writeLog(spec.Name, "ide", "Started on port %d", port)
+}
+
+// stopIDE stops the IDE adapter and releases the port. Best-effort.
+func (p *Provisioner) stopIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
+	if inst.IDE == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
+		return
+	}
+
+	ctx := IDEContext{
+		Owner:        spec.Owner,
+		WorktreePath: spec.ProjectRoot,
+		WorktreeName: spec.WorktreeName,
+		Port:         inst.IDE.Port,
+	}
+
+	if err := p.IDEAdapter.Stop(ctx); err != nil {
+		p.writeLog(spec.Name, "ide", "Stop failed: %v", err)
+	}
+
+	key := PortKey(spec.Owner, spec.WorktreeName)
+	if err := p.PortAllocator.Release(key); err != nil {
+		p.writeLog(spec.Name, "ide", "Port release failed: %v", err)
+	}
+
+	appendEvent(inst, EventIDEStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
+	inst.IDE = nil
+	p.writeLog(spec.Name, "ide", "Stopped")
+}
+
+// healthCheckIDE checks if a running IDE is still healthy, updating Active state.
+func (p *Provisioner) healthCheckIDE(inst *WorkspaceInstance) {
+	if inst.IDE == nil || p.IDEAdapter == nil {
+		return
+	}
+
+	ctx := IDEContext{
+		Owner:        inst.Spec.Owner,
+		WorktreePath: inst.Spec.ProjectRoot,
+		WorktreeName: inst.Spec.WorktreeName,
+		Port:         inst.IDE.Port,
+	}
+
+	err := p.IDEAdapter.HealthCheck(ctx)
+	wasActive := inst.IDE.Active
+	inst.IDE.Active = (err == nil)
+
+	if wasActive && !inst.IDE.Active {
+		appendEvent(inst, EventIDEStopped, "health check failed")
+		p.writeLog(inst.Spec.Name, "ide", "Health check failed, marking inactive")
+	}
+}
+
+// resolveIDEAdapter validates the adapter name from the spec. Returns an error
+// for unknown adapter names.
+func (p *Provisioner) resolveIDEAdapter(spec WorkspaceSpec) error {
+	if spec.IDE == nil {
+		return nil
+	}
+	if p.IDEAdapter == nil {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "IDE requested but no adapter configured",
+		}
+	}
+	if spec.IDE.Adapter != p.IDEAdapter.Name() {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: fmt.Sprintf("unknown IDE adapter %q", spec.IDE.Adapter),
+		}
+	}
+	return nil
 }
 
 // hydrate fetches and fast-forward merges matching worktrees so the user lands
@@ -350,15 +481,18 @@ func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*D
 		}
 	}
 
-	// 4. Remove worktree via git
+	// 4. Stop IDE if running
+	p.stopIDE(inst, inst.Spec)
+
+	// 5. Remove worktree via git
 	if err := p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, force); err != nil {
 		return nil, fmt.Errorf("git worktree remove: %w", err)
 	}
 
-	// 5. Prune stale worktree metadata
+	// 6. Prune stale worktree metadata
 	p.pruneWorktrees(inst.Spec.BareRoot, inst.Spec.Owner)
 
-	// 6. Remove state entry
+	// 7. Remove state entry
 	if err := store.WithLock(func() error {
 		instances, err := store.Load()
 		if err != nil {
@@ -426,7 +560,12 @@ func (p *Provisioner) DeprovisionAll(store StateStore, repoName string, force bo
 		}
 	}
 
-	// 3. Remove all worktrees via git worktree remove (non-default first, default last)
+	// 3. Stop all IDE adapters before removing worktrees
+	for _, inst := range matching {
+		p.stopIDE(inst, inst.Spec)
+	}
+
+	// 4. Remove all worktrees via git worktree remove (non-default first, default last)
 	for _, inst := range matching {
 		if inst.Spec.IsDefault {
 			continue
@@ -533,6 +672,9 @@ func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, er
 			})
 			continue
 		}
+
+		// Stop IDE before removing
+		p.stopIDE(inst, inst.Spec)
 
 		// Clean: remove worktree via git
 		if err := p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, false); err != nil {
