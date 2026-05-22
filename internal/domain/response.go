@@ -29,29 +29,33 @@ const (
 
 // IDEInfo is the clean response object for IDE state — exposed in inspect and
 // provision responses. It collapses the internal IDEInstance (with its full event
-// stream) into the three fields the client needs: adapter name, port, and whether
-// the IDE is currently active (healthy).
+// stream) into the fields the client needs: adapter name, port, and lifecycle
+// status string.
 type IDEInfo struct {
 	Adapter string `json:"adapter"`
 	Port    int    `json:"port"`
-	Active  bool   `json:"active"`
+	Status  string `json:"status"`
 }
 
 // IDEInfoFromInstance builds an IDEInfo from an IDEInstance, or returns nil when
-// the instance is nil. Active is true when the IDE status is Ready.
+// the instance is nil. Status is the string representation of the IDE lifecycle.
 func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
 	if ide == nil {
 		return nil
 	}
+	status := string(ide.Status)
+	if status == "" {
+		status = string(StatusPending)
+	}
 	return &IDEInfo{
 		Adapter: ide.Adapter,
 		Port:    ide.Port,
-		Active:  ide.Status == StatusReady,
+		Status:  status,
 	}
 }
 
 // WorkspaceInspectData extends WorkspaceInstance with worktree diagnostics for inspect responses.
-// The IDEInfo field provides a clean adapter/port/active view when IDE state exists.
+// The IDEInfo field provides a clean adapter/port/status view when IDE state exists.
 type WorkspaceInspectData struct {
 	WorkspaceInstance
 	BareRoot      string   `json:"bare_root"`
@@ -61,7 +65,7 @@ type WorkspaceInspectData struct {
 }
 
 // WorkspaceListItem is the per-workspace entry in a list response. It includes
-// an optional IDEPort field (omitted when zero/no IDE active) so clients can
+// an optional IDEPort field (omitted when zero/IDE not ready) so clients can
 // discover tunnel targets without inspecting each workspace individually.
 type WorkspaceListItem struct {
 	Spec       WorkspaceSpec          `json:"spec"`

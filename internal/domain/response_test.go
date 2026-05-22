@@ -86,8 +86,8 @@ func TestIDEInfoFromInstance_Ready(t *testing.T) {
 	if info.Port != 9100 {
 		t.Errorf("port: expected 9100, got %d", info.Port)
 	}
-	if !info.Active {
-		t.Error("expected Active=true when status is ready")
+	if info.Status != "ready" {
+		t.Errorf("expected Status=ready, got %q", info.Status)
 	}
 }
 
@@ -98,8 +98,8 @@ func TestIDEInfoFromInstance_Failed(t *testing.T) {
 		Status:  StatusFailed,
 	}
 	info := IDEInfoFromInstance(ide)
-	if info.Active {
-		t.Error("expected Active=false when status is failed")
+	if info.Status != "failed" {
+		t.Errorf("expected Status=failed, got %q", info.Status)
 	}
 }
 
@@ -110,13 +110,13 @@ func TestIDEInfoFromInstance_Pending(t *testing.T) {
 		Status:  StatusPending,
 	}
 	info := IDEInfoFromInstance(ide)
-	if info.Active {
-		t.Error("expected Active=false when status is pending")
+	if info.Status != "pending" {
+		t.Errorf("expected Status=pending, got %q", info.Status)
 	}
 }
 
 func TestIDEInfo_JSON(t *testing.T) {
-	info := IDEInfo{Adapter: "openvscode-server", Port: 9100, Active: true}
+	info := IDEInfo{Adapter: "openvscode-server", Port: 9100, Status: "ready"}
 	data, err := json.Marshal(info)
 	if err != nil {
 		t.Fatal(err)
@@ -128,8 +128,11 @@ func TestIDEInfo_JSON(t *testing.T) {
 	if !strings.Contains(s, `"port":9100`) {
 		t.Error("missing port in JSON")
 	}
-	if !strings.Contains(s, `"active":true`) {
-		t.Error("missing active in JSON")
+	if !strings.Contains(s, `"status":"ready"`) {
+		t.Error("missing status in JSON")
+	}
+	if strings.Contains(s, `"active"`) {
+		t.Error("unexpected active field in JSON — should use status instead")
 	}
 }
 
@@ -155,7 +158,7 @@ func TestWorkspaceInspectData_IDEInfoPresent(t *testing.T) {
 		BareRoot:         "/tmp/.bare",
 		WorktreeCount:    1,
 		Worktrees:        []string{"/tmp/default"},
-		IDEInfo:          &IDEInfo{Adapter: "openvscode-server", Port: 9100, Active: true},
+		IDEInfo:          &IDEInfo{Adapter: "openvscode-server", Port: 9100, Status: "ready"},
 	}
 	data, err := json.Marshal(inspect)
 	if err != nil {
@@ -165,8 +168,39 @@ func TestWorkspaceInspectData_IDEInfoPresent(t *testing.T) {
 	if !strings.Contains(s, `"ide_info"`) {
 		t.Error("expected ide_info in JSON")
 	}
-	if !strings.Contains(s, `"active":true`) {
-		t.Error("expected active:true in ide_info")
+	if !strings.Contains(s, `"status":"ready"`) {
+		t.Error("expected status:ready in ide_info")
+	}
+	if strings.Contains(s, `"active"`) {
+		t.Error("unexpected active field in ide_info JSON")
+	}
+}
+
+func TestIDEInfo_NoActiveField(t *testing.T) {
+	// Verify the IDEInfo JSON shape has "status" and no "active" field
+	info := IDEInfo{Adapter: "openvscode-server", Port: 9100, Status: "ready"}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	if strings.Contains(s, `"active"`) {
+		t.Error("IDEInfo JSON must not contain 'active' field — use 'status' instead")
+	}
+	if !strings.Contains(s, `"status":"ready"`) {
+		t.Error("IDEInfo JSON must contain 'status' field")
+	}
+}
+
+func TestIDEInfoFromInstance_EmptyStatus(t *testing.T) {
+	// An IDEInstance with zero-value Status should default to "pending"
+	ide := &IDEInstance{
+		Adapter: "openvscode-server",
+		Port:    9100,
+	}
+	info := IDEInfoFromInstance(ide)
+	if info.Status != "pending" {
+		t.Errorf("expected default Status=pending, got %q", info.Status)
 	}
 }
 
@@ -187,7 +221,7 @@ func TestWorkspaceListItemFromInstance_NoIDE(t *testing.T) {
 	}
 }
 
-func TestWorkspaceListItemFromInstance_IDEActive(t *testing.T) {
+func TestWorkspaceListItemFromInstance_IDEReady(t *testing.T) {
 	inst := &WorkspaceInstance{
 		Spec:   WorkspaceSpec{Name: "myrepo"},
 		Status: StatusReady,
@@ -208,7 +242,7 @@ func TestWorkspaceListItemFromInstance_IDEActive(t *testing.T) {
 	}
 }
 
-func TestWorkspaceListItemFromInstance_IDEInactive(t *testing.T) {
+func TestWorkspaceListItemFromInstance_IDENotReady(t *testing.T) {
 	inst := &WorkspaceInstance{
 		Spec:   WorkspaceSpec{Name: "myrepo"},
 		Status: StatusReady,
@@ -220,11 +254,11 @@ func TestWorkspaceListItemFromInstance_IDEInactive(t *testing.T) {
 	}
 	item := WorkspaceListItemFromInstance(inst)
 	if item.IDEPort != 0 {
-		t.Errorf("expected ide_port=0 when IDE not active, got %d", item.IDEPort)
+		t.Errorf("expected ide_port=0 when IDE not ready, got %d", item.IDEPort)
 	}
 
 	data, _ := json.Marshal(item)
 	if strings.Contains(string(data), `"ide_port"`) {
-		t.Error("expected ide_port to be omitted when IDE not active")
+		t.Error("expected ide_port to be omitted when IDE not ready")
 	}
 }

@@ -698,6 +698,198 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	}
 }
 
+func TestStopIDE_PreservesInstance(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   &mockHTTPChecker{},
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+	key := PortKey("user", "default")
+	pa.Allocate(key)
+
+	inst := &WorkspaceInstance{
+		Spec: WorkspaceSpec{
+			Name:         "myrepo",
+			WorktreeName: "default",
+			ProjectRoot:  filepath.Join(dir, "repo", "default"),
+			Owner:        "user",
+		},
+		Status: StatusReady,
+		IDE: &IDEInstance{
+			Adapter: "openvscode-server",
+			Port:    9100,
+			Events: []IDEEventRecord{
+				{Event: IDEEventStarted, Timestamp: time.Now()},
+				{Event: IDEEventReady, Timestamp: time.Now()},
+			},
+			Status: StatusReady,
+		},
+	}
+
+	p := &Provisioner{
+		LogDir:        filepath.Join(dir, "logs"),
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	p.stopIDE(inst, inst.Spec)
+
+	// IDE instance must be preserved (not nil)
+	if inst.IDE == nil {
+		t.Fatal("expected IDE instance to be preserved after stop, got nil")
+	}
+
+	// Status must be pending after stop
+	if inst.IDE.Status != StatusPending {
+		t.Errorf("expected IDE status %q after stop, got %q", StatusPending, inst.IDE.Status)
+	}
+
+	// Must have ide_stopped event in the trail
+	hasStopped := false
+	for _, ev := range inst.IDE.Events {
+		if ev.Event == IDEEventStopped {
+			hasStopped = true
+		}
+	}
+	if !hasStopped {
+		t.Error("expected ide_stopped event in IDE event trail")
+	}
+
+	// Event trail should have 3 events: started, ready, stopped
+	if len(inst.IDE.Events) != 3 {
+		t.Errorf("expected 3 IDE events, got %d", len(inst.IDE.Events))
+	}
+}
+
+func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	checker := &mockHTTPChecker{healthy: true}
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   checker,
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     filepath.Join(dir, "repo"),
+		BareRoot:     filepath.Join(dir, "repo", ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		IDE:          &IDESpecConfig{Adapter: "openvscode-server"},
+	}
+
+	p := &Provisioner{
+		LogDir:        filepath.Join(dir, "logs"),
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// Workspace event stream must NOT contain any ide_* events
+	for _, ev := range inst.Events {
+		evStr := string(ev.Event)
+		if strings.HasPrefix(evStr, "ide_") {
+			t.Errorf("workspace event stream contains IDE event %q — IDE events should only be on inst.IDE.Events", evStr)
+		}
+	}
+
+	// IDE event stream must contain ide_started and ide_ready
+	if inst.IDE == nil {
+		t.Fatal("expected IDE instance to be set")
+	}
+	hasStarted, hasReady := false, false
+	for _, ev := range inst.IDE.Events {
+		if ev.Event == IDEEventStarted {
+			hasStarted = true
+		}
+		if ev.Event == IDEEventReady {
+			hasReady = true
+		}
+	}
+	if !hasStarted {
+		t.Error("expected ide_started event in IDE event stream")
+	}
+	if !hasReady {
+		t.Error("expected ide_ready event in IDE event stream")
+	}
+}
+
+func TestCredentialCheckEmitsGitCredentialsExistEvent(t *testing.T) {
+	// This test validates that git_credentials_exist events appear in the
+	// workspace event stream (inst.Events), not in the IDE event stream.
+	// The checkCredentials function reads from a fixed path under /home/<owner>/,
+	// so we set up the credential file there.
+	owner := currentUser()
+	credDir := filepath.Join("/home", owner, ".config/dsc/credentials")
+	if err := os.MkdirAll(credDir, 0755); err != nil {
+		t.Skipf("cannot create credential dir at %s (CI without /home): %v", credDir, err)
+	}
+	credFile := filepath.Join(credDir, "git-credentials")
+	if err := os.WriteFile(credFile, []byte("https://x-access-token:tok@github.com\n"), 0644); err != nil {
+		t.Skipf("cannot write credential file: %v", err)
+	}
+	defer os.Remove(credFile)
+
+	dir := t.TempDir()
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     filepath.Join(dir, "repo"),
+		BareRoot:     filepath.Join(dir, "repo", ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        owner,
+	}
+
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// Check for git_credentials_exist event in workspace event stream
+	hasCredEvent := false
+	for _, ev := range inst.Events {
+		if ev.Event == EventGitCredentialsExist {
+			hasCredEvent = true
+		}
+	}
+	if !hasCredEvent {
+		t.Error("expected git_credentials_exist event in workspace event stream")
+	}
+}
+
 func TestIDESpecConfig_JSONRoundTrip(t *testing.T) {
 	spec := WorkspaceSpec{
 		Name:         "myrepo",

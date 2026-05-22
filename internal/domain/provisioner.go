@@ -282,6 +282,9 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 }
 
 // stopIDE stops the IDE adapter and releases the port. Best-effort.
+// The IDEInstance is preserved (not nil'd) with a StatusPending status and an
+// ide_stopped event in the trail. A nil inst.IDE means "IDE was never configured",
+// not "IDE was stopped".
 func (p *Provisioner) stopIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 	if inst.IDE == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
 		return
@@ -304,7 +307,6 @@ func (p *Provisioner) stopIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 	}
 
 	appendIDEEvent(inst.IDE, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
-	inst.IDE = nil
 	p.writeLog(spec.Name, "ide", "Stopped")
 }
 
