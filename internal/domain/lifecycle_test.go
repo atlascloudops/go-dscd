@@ -119,6 +119,70 @@ func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	}
 }
 
+func TestResolveLifecycleStatus_IgnoresIDEEvents(t *testing.T) {
+	// Workspace is Ready (worktree_created), then IDE events fire.
+	// Status must remain Ready regardless of IDE events.
+	baseEvents := []WorkspaceEventRecord{
+		{Event: EventCloneStarted, Timestamp: time.Now()},
+		{Event: EventCloneCompleted, Timestamp: time.Now()},
+		{Event: EventWorktreeCreating, Timestamp: time.Now()},
+		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+	}
+
+	ideEvents := []WorkspaceEvent{
+		EventIDEStarted,
+		EventIDEReady,
+		EventIDEStopped,
+		EventIDEFailed,
+	}
+
+	for _, ide := range ideEvents {
+		events := append([]WorkspaceEventRecord{}, baseEvents...)
+		events = append(events, WorkspaceEventRecord{Event: ide, Timestamp: time.Now()})
+		got := ResolveLifecycleStatus(events)
+		if got != LifecycleReady {
+			t.Errorf("after %q: expected %q, got %q", ide, LifecycleReady, got)
+		}
+	}
+}
+
+func TestResolveLifecycleStatus_IDEEventsAfterFailed(t *testing.T) {
+	// Even if IDE events follow a provision_failed, status remains Failed.
+	events := []WorkspaceEventRecord{
+		{Event: EventCloneStarted, Timestamp: time.Now()},
+		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone error"},
+		{Event: EventIDEFailed, Timestamp: time.Now()},
+	}
+	got := ResolveLifecycleStatus(events)
+	if got != LifecycleFailed {
+		t.Errorf("expected %q, got %q", LifecycleFailed, got)
+	}
+}
+
+func TestResolveLifecycleStatus_OnlyIDEEvents(t *testing.T) {
+	// If the only events are IDE events, status is Pending (no workspace events).
+	events := []WorkspaceEventRecord{
+		{Event: EventIDEStarted, Timestamp: time.Now()},
+		{Event: EventIDEReady, Timestamp: time.Now()},
+	}
+	got := ResolveLifecycleStatus(events)
+	if got != LifecyclePending {
+		t.Errorf("expected %q for only-IDE events, got %q", LifecyclePending, got)
+	}
+}
+
+func TestResolveLifecycleStatus_IDEEventsAfterProvisioning(t *testing.T) {
+	// IDE events after an in-progress workspace event — status stays Provisioning.
+	events := []WorkspaceEventRecord{
+		{Event: EventCloneStarted, Timestamp: time.Now()},
+		{Event: EventIDEStarted, Timestamp: time.Now()},
+	}
+	got := ResolveLifecycleStatus(events)
+	if got != LifecycleProvisioning {
+		t.Errorf("expected %q, got %q", LifecycleProvisioning, got)
+	}
+}
+
 func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 	inst := WorkspaceInstance{
 		State: StatePending,

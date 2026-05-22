@@ -39,6 +39,7 @@ type WorkspaceInstance struct {
 	Status          string                 `json:"status"`
 	Events          []WorkspaceEventRecord `json:"events,omitempty"`
 	Lifecycle       LifecycleStatus        `json:"lifecycle,omitempty"`
+	IDE             *IDEState              `json:"ide,omitempty"`
 	HeadCommit      string                 `json:"head_commit,omitempty"`
 	CredentialHost  string                 `json:"credential_host"`
 	ProvisionedAt   *time.Time             `json:"provisioned_at,omitempty"`
