@@ -31,7 +31,7 @@ func TestRoundTrip(t *testing.T) {
 				ProjectRoot: "/home/user/code/repo1",
 				Owner:       "user",
 			},
-			Lifecycle:      domain.LifecycleReady,
+			Status:      domain.StatusReady,
 			CredentialHost: "github.com",
 			ProvisionedAt:  &now,
 			LastError:      nil,
@@ -49,7 +49,7 @@ func TestRoundTrip(t *testing.T) {
 				ProjectRoot: "/home/user/code/repo2",
 				Owner:       "user",
 			},
-			Lifecycle:      domain.LifecycleFailed,
+			Status:      domain.StatusFailed,
 			CredentialHost: "gitlab.com",
 			ProvisionedAt:  &now,
 			LastError:      &errMsg,
@@ -70,7 +70,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ws1 := loaded["ws1"]
-	if ws1.Spec.Name != "ws1" || ws1.Lifecycle != domain.LifecycleReady {
+	if ws1.Spec.Name != "ws1" || ws1.Status != domain.StatusReady {
 		t.Fatalf("ws1 mismatch: %+v", ws1)
 	}
 	if ws1.ProvisionedAt == nil || !ws1.ProvisionedAt.Equal(now) {
@@ -78,7 +78,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ws2 := loaded["ws2"]
-	if ws2.Spec.Name != "ws2" || ws2.Lifecycle != domain.LifecycleFailed {
+	if ws2.Spec.Name != "ws2" || ws2.Status != domain.StatusFailed {
 		t.Fatalf("ws2 mismatch: %+v", ws2)
 	}
 	if ws2.LastError == nil || *ws2.LastError != errMsg {

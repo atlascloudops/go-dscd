@@ -193,16 +193,16 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 
 	saved := store.instances["test"]
 	if saved == nil {
 		t.Fatal("workspace not persisted")
 	}
-	if saved.Lifecycle != LifecycleReady {
-		t.Fatalf("persisted lifecycle should be ready, got %s", saved.Lifecycle)
+	if saved.Status != StatusReady {
+		t.Fatalf("persisted lifecycle should be ready, got %s", saved.Status)
 	}
 }
 
@@ -234,8 +234,8 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 }
 
@@ -333,8 +333,8 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	if !worktreeExists(projectRoot) {
 		t.Fatal("default/ worktree was not created")
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 	if inst.HeadCommit == "" {
 		t.Fatal("expected non-empty head commit")
@@ -355,8 +355,8 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
-	if inst2.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready on re-provision, got %s", inst2.Lifecycle)
+	if inst2.Status != StatusReady {
+		t.Fatalf("expected ready on re-provision, got %s", inst2.Status)
 	}
 }
 
@@ -415,8 +415,8 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	if !worktreeExists(featureRoot) {
 		t.Fatal(".worktrees/feature-vpc/ worktree was not created")
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 
 	// Verify .git in feature worktree is a file
@@ -477,8 +477,8 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	if !worktreeExists(featureRoot) {
 		t.Fatal("worktree should exist")
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 }
 
@@ -521,8 +521,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 3: default provision failed: %v", err)
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("step 3: expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("step 3: expected ready, got %s", inst.Status)
 	}
 
 	// --- Step 4: Verify bare clone structure ---
@@ -562,8 +562,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 5: experiment provision failed: %v", err)
 	}
-	if inst2.Lifecycle != LifecycleReady {
-		t.Fatalf("step 5: expected ready, got %s", inst2.Lifecycle)
+	if inst2.Status != StatusReady {
+		t.Fatalf("step 5: expected ready, got %s", inst2.Status)
 	}
 	// Verify .git file in experiment worktree
 	expGit := filepath.Join(experimentRoot, ".git")
@@ -714,14 +714,14 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	_, _ = p.Deprovision(store, "ocr-service/spike-a", true)
 
 	// --- Step 17: Sync detects corrupted lifecycle ---
-	store.instances["ocr-service"].Lifecycle = LifecyclePending // manually corrupt
+	store.instances["ocr-service"].Status = StatusPending // manually corrupt
 	syncer := NewSyncer(store, filepath.Join(dir, "logs"))
 	report, err := syncer.Sync()
 	if err != nil {
 		t.Fatalf("step 17: sync failed: %v", err)
 	}
-	if store.instances["ocr-service"].Lifecycle != LifecycleReady {
-		t.Fatalf("step 17: expected ready after sync, got %s", store.instances["ocr-service"].Lifecycle)
+	if store.instances["ocr-service"].Status != StatusReady {
+		t.Fatalf("step 17: expected ready after sync, got %s", store.instances["ocr-service"].Status)
 	}
 	if len(report.LifecycleChanges) == 0 {
 		t.Fatal("step 17: expected lifecycle changes in sync report")
@@ -735,8 +735,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 19: idempotent re-provision failed: %v", err)
 	}
-	if inst3.Lifecycle != LifecycleReady {
-		t.Fatalf("step 19: expected ready on re-provision, got %s", inst3.Lifecycle)
+	if inst3.Status != StatusReady {
+		t.Fatalf("step 19: expected ready on re-provision, got %s", inst3.Status)
 	}
 
 	// --- Verify response schema version is v2 ---
@@ -788,8 +788,8 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial provision failed: %v", err)
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 	initialCommit := inst.HeadCommit
 
@@ -801,8 +801,8 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
-	if inst2.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready after hydrate, got %s", inst2.Lifecycle)
+	if inst2.Status != StatusReady {
+		t.Fatalf("expected ready after hydrate, got %s", inst2.Status)
 	}
 
 	// Verify HEAD advanced
@@ -875,8 +875,8 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
-	if inst2.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst2.Lifecycle)
+	if inst2.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst2.Status)
 	}
 
 	// Verify hydrate_skipped event with "uncommitted changes" detail
@@ -935,8 +935,8 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
-	if inst2.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready even with diverged branch, got %s", inst2.Lifecycle)
+	if inst2.Status != StatusReady {
+		t.Fatalf("expected ready even with diverged branch, got %s", inst2.Status)
 	}
 
 	// Verify hydrate_skipped event with divergence detail
@@ -1018,8 +1018,8 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-provision failed: %v", err)
 	}
-	if inst.Lifecycle != LifecycleReady {
-		t.Fatalf("expected ready, got %s", inst.Lifecycle)
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 
 	// Feature worktree HEAD should be unchanged

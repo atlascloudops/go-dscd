@@ -59,7 +59,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			fmt.Fprintf(os.Stdout, "Branch:          %s\n", inst.Spec.VCS.Branch)
 			fmt.Fprintf(os.Stdout, "Project Root:    %s\n", inst.Spec.ProjectRoot)
 			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", inspectData.BareRoot)
-			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", inst.Lifecycle)
+			fmt.Fprintf(os.Stdout, "Status:          %s\n", inst.Status)
 			fmt.Fprintf(os.Stdout, "Head Commit:     %s\n", inst.HeadCommit)
 			fmt.Fprintf(os.Stdout, "Credential:      %s (%s)\n", inst.CredentialHost, credStatus)
 			fmt.Fprintf(os.Stdout, "Worktree Count:  %d\n", inspectData.WorktreeCount)

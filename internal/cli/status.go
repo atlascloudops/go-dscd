@@ -53,7 +53,7 @@ func newStatusCmd(store domain.StateStore, version string, statePath *string) *c
 			} else {
 				data.WorkspaceCount = len(instances)
 				for _, inst := range instances {
-					data.WorkspaceSummary[string(inst.Lifecycle)]++
+					data.WorkspaceSummary[string(inst.Status)]++
 					if inst.LastSyncedAt != nil {
 						ts := inst.LastSyncedAt.Format("2006-01-02T15:04:05Z")
 						data.LastSyncedAt = &ts

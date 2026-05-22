@@ -269,7 +269,7 @@ func TestIDEState_JSONRoundTrip(t *testing.T) {
 
 func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
 	inst := WorkspaceInstance{
-		Lifecycle: LifecyclePending,
+		Status: StatusPending,
 		IDE: &IDEState{
 			AdapterName: "openvscode-server",
 			Port:        9100,
@@ -300,7 +300,7 @@ func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
 
 func TestWorkspaceInstance_IDEStateOmittedWhenNil(t *testing.T) {
 	inst := WorkspaceInstance{
-		Lifecycle: LifecyclePending,
+		Status: StatusPending,
 	}
 
 	data, err := json.Marshal(inst)
@@ -378,13 +378,13 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 		t.Errorf("expected adapter name 'openvscode-server', got %q", inst.IDE.AdapterName)
 	}
 
-	// Should have emitted ide_started and ide_ready events
+	// Should have emitted ide_started and ide_ready events in the IDE event stream
 	hasStarted, hasReady := false, false
-	for _, ev := range inst.Events {
-		if ev.Event == EventIDEStarted {
+	for _, ev := range inst.IDEEvents {
+		if ev.Event == IDEEventStarted {
 			hasStarted = true
 		}
-		if ev.Event == EventIDEReady {
+		if ev.Event == IDEEventReady {
 			hasReady = true
 		}
 	}
@@ -395,9 +395,9 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 		t.Error("expected ide_ready event")
 	}
 
-	// Lifecycle should still be Ready (IDE events are informational)
-	if inst.Lifecycle != LifecycleReady {
-		t.Errorf("expected lifecycle ready, got %s", inst.Lifecycle)
+	// Workspace status should still be Ready (IDE events are in separate stream)
+	if inst.Status != StatusReady {
+		t.Errorf("expected status ready, got %s", inst.Status)
 	}
 }
 
@@ -452,10 +452,10 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 		t.Error("expected IDE to be inactive after failure")
 	}
 
-	// Should have ide_failed event
+	// Should have ide_failed event in the IDE event stream
 	hasFailed := false
-	for _, ev := range inst.Events {
-		if ev.Event == EventIDEFailed {
+	for _, ev := range inst.IDEEvents {
+		if ev.Event == IDEEventFailed {
 			hasFailed = true
 		}
 	}
@@ -463,9 +463,9 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 		t.Error("expected ide_failed event")
 	}
 
-	// Lifecycle should still be Ready
-	if inst.Lifecycle != LifecycleReady {
-		t.Errorf("expected lifecycle ready despite IDE failure, got %s", inst.Lifecycle)
+	// Workspace status should still be Ready
+	if inst.Status != StatusReady {
+		t.Errorf("expected status ready despite IDE failure, got %s", inst.Status)
 	}
 }
 
@@ -498,10 +498,8 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 		t.Error("expected no IDE state when IDE not requested")
 	}
 
-	for _, ev := range inst.Events {
-		if ev.Event == EventIDEStarted || ev.Event == EventIDEReady || ev.Event == EventIDEFailed {
-			t.Errorf("unexpected IDE event: %s", ev.Event)
-		}
+	if len(inst.IDEEvents) > 0 {
+		t.Errorf("expected no IDE events when IDE not requested, got %d", len(inst.IDEEvents))
 	}
 }
 
@@ -561,7 +559,7 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
-		Lifecycle: LifecycleReady,
+		Status: StatusReady,
 		IDE: &IDEState{
 			AdapterName: "openvscode-server",
 			Port:        9100,
@@ -594,7 +592,7 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
-		Lifecycle: LifecycleReady,
+		Status: StatusReady,
 		IDE: &IDEState{
 			AdapterName: "openvscode-server",
 			Port:        9100,
@@ -613,10 +611,14 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 		t.Error("expected IDE to be marked inactive")
 	}
 
-	// Should have emitted ide_stopped event
-	lastEvent := store.instances["ws1"].Events[len(store.instances["ws1"].Events)-1]
-	if lastEvent.Event != EventIDEStopped {
-		t.Errorf("expected ide_stopped event, got %s", lastEvent.Event)
+	// Should have emitted ide_stopped event in the IDE event stream
+	ideEvents := store.instances["ws1"].IDEEvents
+	if len(ideEvents) == 0 {
+		t.Fatal("expected IDE events")
+	}
+	lastIDEEvent := ideEvents[len(ideEvents)-1]
+	if lastIDEEvent.Event != IDEEventStopped {
+		t.Errorf("expected ide_stopped event, got %s", lastIDEEvent.Event)
 	}
 }
 
@@ -650,7 +652,7 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 			BareRoot:     filepath.Join(dir, "repo", ".bare"),
 			Owner:        "user",
 		},
-		Lifecycle: LifecycleReady,
+		Status: StatusReady,
 		IDE: &IDEState{
 			AdapterName: "openvscode-server",
 			Port:        9100,

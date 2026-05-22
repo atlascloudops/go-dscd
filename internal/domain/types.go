@@ -34,7 +34,9 @@ type VCSTarget struct {
 type WorkspaceInstance struct {
 	Spec            WorkspaceSpec          `json:"spec"`
 	Events          []WorkspaceEventRecord `json:"events,omitempty"`
-	Lifecycle       LifecycleStatus        `json:"lifecycle,omitempty"`
+	Status          Status                 `json:"status,omitempty"`
+	IDEEvents       []IDEEventRecord       `json:"ide_events,omitempty"`
+	IDEStatus       Status                 `json:"ide_status,omitempty"`
 	IDE             *IDEState              `json:"ide,omitempty"`
 	HeadCommit      string                 `json:"head_commit,omitempty"`
 	CredentialHost  string                 `json:"credential_host"`
@@ -44,22 +46,34 @@ type WorkspaceInstance struct {
 	CredentialFresh bool                   `json:"-"`
 }
 
-// appendEvent appends an event record and keeps Lifecycle in sync.
+// appendEvent appends a workspace event record and keeps Status in sync.
 func appendEvent(inst *WorkspaceInstance, event WorkspaceEvent, detail string) {
 	inst.Events = append(inst.Events, WorkspaceEventRecord{
 		Event:     event,
 		Timestamp: time.Now().UTC(),
 		Detail:    detail,
 	})
-	inst.Lifecycle = ResolveLifecycleStatus(inst.Events)
+	var resolver WorkspaceStatusResolver
+	inst.Status = resolver.Resolve(inst.Events)
 }
 
-// DisplayStatus returns a human-readable status string derived from Lifecycle.
+// appendIDEEvent appends an IDE event record and keeps IDEStatus in sync.
+func appendIDEEvent(inst *WorkspaceInstance, event IDEEvent, detail string) {
+	inst.IDEEvents = append(inst.IDEEvents, IDEEventRecord{
+		Event:     event,
+		Timestamp: time.Now().UTC(),
+		Detail:    detail,
+	})
+	var resolver IDEStatusResolver
+	inst.IDEStatus = resolver.Resolve(inst.IDEEvents)
+}
+
+// DisplayStatus returns a human-readable status string derived from Status.
 func (w *WorkspaceInstance) DisplayStatus() string {
-	switch w.Lifecycle {
-	case LifecycleFailed:
+	switch w.Status {
+	case StatusFailed:
 		return "ERROR"
-	case LifecycleReady:
+	case StatusReady:
 		return "SYNCED"
 	default:
 		return "MISSING"

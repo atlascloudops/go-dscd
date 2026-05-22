@@ -32,10 +32,10 @@ func newWorkspaceListCmd(store domain.StateStore) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tLIFECYCLE\tREPO\tBRANCH")
+			fmt.Fprintln(w, "NAME\tSTATUS\tREPO\tBRANCH")
 			for _, inst := range list {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					inst.Spec.Name, inst.Lifecycle, inst.Spec.VCS.Repo, inst.Spec.VCS.Branch)
+					inst.Spec.Name, inst.Status, inst.Spec.VCS.Repo, inst.Spec.VCS.Branch)
 			}
 			w.Flush()
 			return nil

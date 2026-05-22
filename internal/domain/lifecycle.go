@@ -13,11 +13,8 @@ const (
 	EventProvisionFailed  WorkspaceEvent = "provision_failed"
 	EventCloneDetected    WorkspaceEvent = "clone_detected"
 
-	// IDE events — informational only; these do NOT affect workspace lifecycle status.
-	EventIDEStarted WorkspaceEvent = "ide_started"
-	EventIDEReady   WorkspaceEvent = "ide_ready"
-	EventIDEStopped WorkspaceEvent = "ide_stopped"
-	EventIDEFailed  WorkspaceEvent = "ide_failed"
+	// Informational workspace events — these do NOT affect workspace lifecycle status.
+	EventGitCredentialsExist WorkspaceEvent = "git_credentials_exist"
 
 	// Hydrate events — informational only; these do NOT affect workspace lifecycle status.
 	EventHydrateStarted   WorkspaceEvent = "hydrate_started"
@@ -33,66 +30,92 @@ type WorkspaceEventRecord struct {
 	Detail    string         `json:"detail,omitempty"`
 }
 
-// LifecycleStatus is the resolved business state projected from the event stream.
-type LifecycleStatus string
+// IDEEvent is a typed string constant representing an IDE lifecycle milestone.
+// IDE events live in a separate stream from workspace events, enforced at
+// compile time by distinct types.
+type IDEEvent string
 
 const (
-	LifecyclePending      LifecycleStatus = "pending"
-	LifecycleProvisioning LifecycleStatus = "provisioning"
-	LifecycleReady        LifecycleStatus = "ready"
-	LifecycleFailed       LifecycleStatus = "failed"
+	IDEEventStarted IDEEvent = "ide_started"
+	IDEEventReady   IDEEvent = "ide_ready"
+	IDEEventFailed  IDEEvent = "ide_failed"
+	IDEEventStopped IDEEvent = "ide_stopped"
 )
 
-// isIDEEvent returns true for events that are informational IDE lifecycle
-// events. These never affect workspace lifecycle status.
-func isIDEEvent(e WorkspaceEvent) bool {
-	switch e {
-	case EventIDEStarted, EventIDEReady, EventIDEStopped, EventIDEFailed:
-		return true
-	}
-	return false
+// IDEEventRecord is a single immutable event entry in the IDE event stream.
+type IDEEventRecord struct {
+	Event     IDEEvent  `json:"event"`
+	Timestamp time.Time `json:"timestamp"`
+	Detail    string    `json:"detail,omitempty"`
 }
 
-// isHydrateEvent returns true for informational hydration events.
-// These never affect workspace lifecycle status.
-func isHydrateEvent(e WorkspaceEvent) bool {
-	switch e {
-	case EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped:
-		return true
-	}
-	return false
+// Status is the resolved business state projected from an event stream.
+type Status string
+
+const (
+	StatusPending      Status = "pending"
+	StatusProvisioning Status = "provisioning"
+	StatusReady        Status = "ready"
+	StatusFailed       Status = "failed"
+)
+
+// StatusResolver is the interface for projecting an event stream into a Status.
+// Workspace and IDE resolvers implement this with their respective event record types.
+type StatusResolver[T any] interface {
+	Resolve(events []T) Status
 }
 
-// isInfoEvent returns true for any informational event that does not affect
-// workspace lifecycle status (IDE events and hydration events).
-func isInfoEvent(e WorkspaceEvent) bool {
-	return isIDEEvent(e) || isHydrateEvent(e)
-}
+// WorkspaceStatusResolver resolves workspace lifecycle status from workspace events.
+// Informational events (hydrate, git_credentials_exist) are skipped — workspace
+// status is determined solely by provisioning milestone events.
+type WorkspaceStatusResolver struct{}
 
-// ResolveLifecycleStatus is a pure projection from an ordered event slice to a
-// lifecycle status. Given the same events it always returns the same result.
-// Informational events (IDE, hydration) are skipped — workspace status is
-// determined solely by workspace/worktree events.
-func ResolveLifecycleStatus(events []WorkspaceEventRecord) LifecycleStatus {
+// Resolve projects an ordered workspace event slice into a Status.
+func (WorkspaceStatusResolver) Resolve(events []WorkspaceEventRecord) Status {
 	if len(events) == 0 {
-		return LifecyclePending
+		return StatusPending
 	}
 
-	// Walk backwards to find the latest non-informational event.
+	// Walk backwards to find the latest status-affecting event.
 	for i := len(events) - 1; i >= 0; i-- {
-		if isInfoEvent(events[i].Event) {
-			continue
-		}
 		switch events[i].Event {
+		case EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped,
+			EventGitCredentialsExist:
+			// Informational — skip
+			continue
 		case EventProvisionFailed:
-			return LifecycleFailed
+			return StatusFailed
 		case EventWorktreeCreated, EventCloneDetected:
-			return LifecycleReady
+			return StatusReady
 		default:
-			return LifecycleProvisioning
+			return StatusProvisioning
 		}
 	}
 
-	// All events are informational — treat as Pending (no workspace events yet).
-	return LifecyclePending
+	// All events are informational — treat as Pending (no provisioning events yet).
+	return StatusPending
+}
+
+// IDEStatusResolver resolves IDE lifecycle status from IDE events.
+type IDEStatusResolver struct{}
+
+// Resolve projects an ordered IDE event slice into a Status.
+func (IDEStatusResolver) Resolve(events []IDEEventRecord) Status {
+	if len(events) == 0 {
+		return StatusPending
+	}
+
+	latest := events[len(events)-1]
+	switch latest.Event {
+	case IDEEventReady:
+		return StatusReady
+	case IDEEventFailed:
+		return StatusFailed
+	case IDEEventStopped:
+		return StatusPending
+	case IDEEventStarted:
+		return StatusProvisioning
+	default:
+		return StatusPending
+	}
 }

@@ -85,7 +85,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 	}); err != nil {
 		return nil, err
 	}
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s (idempotent)", inst.Lifecycle)
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s (idempotent)", inst.Status)
 	return inst, nil
 }
 
@@ -157,7 +157,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
 }
 
@@ -234,7 +234,7 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
 }
 
@@ -248,7 +248,7 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 	key := PortKey(spec.Owner, spec.WorktreeName)
 	port, err := p.PortAllocator.Allocate(key)
 	if err != nil {
-		appendEvent(inst, EventIDEFailed, fmt.Sprintf("port allocation: %v", err))
+		appendIDEEvent(inst, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
 		p.writeLog(spec.Name, "ide", "Port allocation failed: %v", err)
 		return
 	}
@@ -260,9 +260,9 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 		Port:         port,
 	}
 
-	appendEvent(inst, EventIDEStarted, fmt.Sprintf("port=%d", port))
+	appendIDEEvent(inst, IDEEventStarted, fmt.Sprintf("port=%d", port))
 	if err := p.IDEAdapter.Start(ctx); err != nil {
-		appendEvent(inst, EventIDEFailed, err.Error())
+		appendIDEEvent(inst, IDEEventFailed, err.Error())
 		inst.IDE = &IDEState{
 			AdapterName: p.IDEAdapter.Name(),
 			Port:        port,
@@ -272,7 +272,7 @@ func (p *Provisioner) startIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 		return
 	}
 
-	appendEvent(inst, EventIDEReady, fmt.Sprintf("port=%d", port))
+	appendIDEEvent(inst, IDEEventReady, fmt.Sprintf("port=%d", port))
 	inst.IDE = &IDEState{
 		AdapterName: p.IDEAdapter.Name(),
 		Port:        port,
@@ -303,7 +303,7 @@ func (p *Provisioner) stopIDE(inst *WorkspaceInstance, spec WorkspaceSpec) {
 		p.writeLog(spec.Name, "ide", "Port release failed: %v", err)
 	}
 
-	appendEvent(inst, EventIDEStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
+	appendIDEEvent(inst, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
 	inst.IDE = nil
 	p.writeLog(spec.Name, "ide", "Stopped")
 }
@@ -326,7 +326,7 @@ func (p *Provisioner) healthCheckIDE(inst *WorkspaceInstance) {
 	inst.IDE.Active = (err == nil)
 
 	if wasActive && !inst.IDE.Active {
-		appendEvent(inst, EventIDEStopped, "health check failed")
+		appendIDEEvent(inst, IDEEventStopped, "health check failed")
 		p.writeLog(inst.Spec.Name, "ide", "Health check failed, marking inactive")
 	}
 }

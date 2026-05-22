@@ -6,19 +6,23 @@ import (
 	"time"
 )
 
-func TestResolveLifecycleStatus_EmptyEvents(t *testing.T) {
-	got := ResolveLifecycleStatus(nil)
-	if got != LifecyclePending {
-		t.Errorf("expected %q, got %q", LifecyclePending, got)
+// --- WorkspaceStatusResolver tests ---
+
+func TestWorkspaceStatusResolver_EmptyEvents(t *testing.T) {
+	var r WorkspaceStatusResolver
+	got := r.Resolve(nil)
+	if got != StatusPending {
+		t.Errorf("expected %q, got %q", StatusPending, got)
 	}
 
-	got = ResolveLifecycleStatus([]WorkspaceEventRecord{})
-	if got != LifecyclePending {
-		t.Errorf("expected %q for empty slice, got %q", LifecyclePending, got)
+	got = r.Resolve([]WorkspaceEventRecord{})
+	if got != StatusPending {
+		t.Errorf("expected %q for empty slice, got %q", StatusPending, got)
 	}
 }
 
-func TestResolveLifecycleStatus_InProgress(t *testing.T) {
+func TestWorkspaceStatusResolver_InProgress(t *testing.T) {
+	var r WorkspaceStatusResolver
 	cases := []WorkspaceEvent{
 		EventCloneStarted,
 		EventCloneCompleted,
@@ -28,36 +32,202 @@ func TestResolveLifecycleStatus_InProgress(t *testing.T) {
 		events := []WorkspaceEventRecord{
 			{Event: evt, Timestamp: time.Now()},
 		}
-		got := ResolveLifecycleStatus(events)
-		if got != LifecycleProvisioning {
-			t.Errorf("event %q: expected %q, got %q", evt, LifecycleProvisioning, got)
+		got := r.Resolve(events)
+		if got != StatusProvisioning {
+			t.Errorf("event %q: expected %q, got %q", evt, StatusProvisioning, got)
 		}
 	}
 }
 
-func TestResolveLifecycleStatus_Ready(t *testing.T) {
+func TestWorkspaceStatusResolver_Ready(t *testing.T) {
+	var r WorkspaceStatusResolver
 	events := []WorkspaceEventRecord{
 		{Event: EventCloneStarted, Timestamp: time.Now()},
 		{Event: EventCloneCompleted, Timestamp: time.Now()},
 		{Event: EventWorktreeCreating, Timestamp: time.Now()},
 		{Event: EventWorktreeCreated, Timestamp: time.Now()},
 	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleReady {
-		t.Errorf("expected %q, got %q", LifecycleReady, got)
+	got := r.Resolve(events)
+	if got != StatusReady {
+		t.Errorf("expected %q, got %q", StatusReady, got)
 	}
 }
 
-func TestResolveLifecycleStatus_Failed(t *testing.T) {
+func TestWorkspaceStatusResolver_Failed(t *testing.T) {
+	var r WorkspaceStatusResolver
 	events := []WorkspaceEventRecord{
 		{Event: EventCloneStarted, Timestamp: time.Now()},
 		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone timed out"},
 	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleFailed {
-		t.Errorf("expected %q, got %q", LifecycleFailed, got)
+	got := r.Resolve(events)
+	if got != StatusFailed {
+		t.Errorf("expected %q, got %q", StatusFailed, got)
 	}
 }
+
+func TestWorkspaceStatusResolver_IgnoresHydrateEvents(t *testing.T) {
+	var r WorkspaceStatusResolver
+	baseEvents := []WorkspaceEventRecord{
+		{Event: EventCloneStarted, Timestamp: time.Now()},
+		{Event: EventCloneCompleted, Timestamp: time.Now()},
+		{Event: EventWorktreeCreating, Timestamp: time.Now()},
+		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+	}
+
+	hydrateEvents := []WorkspaceEvent{
+		EventHydrateStarted,
+		EventHydrateCompleted,
+		EventHydrateSkipped,
+	}
+
+	for _, he := range hydrateEvents {
+		events := append([]WorkspaceEventRecord{}, baseEvents...)
+		events = append(events, WorkspaceEventRecord{Event: he, Timestamp: time.Now()})
+		got := r.Resolve(events)
+		if got != StatusReady {
+			t.Errorf("after %q: expected %q, got %q", he, StatusReady, got)
+		}
+	}
+}
+
+func TestWorkspaceStatusResolver_HydrateAfterFailed(t *testing.T) {
+	var r WorkspaceStatusResolver
+	events := []WorkspaceEventRecord{
+		{Event: EventCloneStarted, Timestamp: time.Now()},
+		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone error"},
+		{Event: EventHydrateSkipped, Timestamp: time.Now(), Detail: "fetch failed"},
+	}
+	got := r.Resolve(events)
+	if got != StatusFailed {
+		t.Errorf("expected %q, got %q", StatusFailed, got)
+	}
+}
+
+func TestWorkspaceStatusResolver_OnlyHydrateEvents(t *testing.T) {
+	var r WorkspaceStatusResolver
+	events := []WorkspaceEventRecord{
+		{Event: EventHydrateStarted, Timestamp: time.Now()},
+		{Event: EventHydrateCompleted, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusPending {
+		t.Errorf("expected %q for only-hydrate events, got %q", StatusPending, got)
+	}
+}
+
+func TestWorkspaceStatusResolver_MixedInfoEvents(t *testing.T) {
+	var r WorkspaceStatusResolver
+	events := []WorkspaceEventRecord{
+		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+		{Event: EventHydrateStarted, Timestamp: time.Now()},
+		{Event: EventHydrateCompleted, Timestamp: time.Now()},
+		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
+		{Event: EventHydrateSkipped, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusReady {
+		t.Errorf("expected %q, got %q", StatusReady, got)
+	}
+}
+
+func TestWorkspaceStatusResolver_GitCredentialsExistIsInformational(t *testing.T) {
+	var r WorkspaceStatusResolver
+
+	// git_credentials_exist after Ready — status stays Ready
+	events := []WorkspaceEventRecord{
+		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusReady {
+		t.Errorf("expected %q after git_credentials_exist, got %q", StatusReady, got)
+	}
+
+	// Only git_credentials_exist — status is Pending
+	events2 := []WorkspaceEventRecord{
+		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
+	}
+	got2 := r.Resolve(events2)
+	if got2 != StatusPending {
+		t.Errorf("expected %q for only git_credentials_exist, got %q", StatusPending, got2)
+	}
+}
+
+func TestWorkspaceStatusResolver_CloneDetected(t *testing.T) {
+	var r WorkspaceStatusResolver
+	events := []WorkspaceEventRecord{
+		{Event: EventCloneDetected, Timestamp: time.Now(), Detail: "detected by sync"},
+	}
+	got := r.Resolve(events)
+	if got != StatusReady {
+		t.Errorf("expected %q, got %q", StatusReady, got)
+	}
+}
+
+// --- IDEStatusResolver tests ---
+
+func TestIDEStatusResolver_EmptyEvents(t *testing.T) {
+	var r IDEStatusResolver
+	got := r.Resolve(nil)
+	if got != StatusPending {
+		t.Errorf("expected %q, got %q", StatusPending, got)
+	}
+
+	got = r.Resolve([]IDEEventRecord{})
+	if got != StatusPending {
+		t.Errorf("expected %q for empty slice, got %q", StatusPending, got)
+	}
+}
+
+func TestIDEStatusResolver_Started(t *testing.T) {
+	var r IDEStatusResolver
+	events := []IDEEventRecord{
+		{Event: IDEEventStarted, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusProvisioning {
+		t.Errorf("expected %q, got %q", StatusProvisioning, got)
+	}
+}
+
+func TestIDEStatusResolver_Ready(t *testing.T) {
+	var r IDEStatusResolver
+	events := []IDEEventRecord{
+		{Event: IDEEventStarted, Timestamp: time.Now()},
+		{Event: IDEEventReady, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusReady {
+		t.Errorf("expected %q, got %q", StatusReady, got)
+	}
+}
+
+func TestIDEStatusResolver_Failed(t *testing.T) {
+	var r IDEStatusResolver
+	events := []IDEEventRecord{
+		{Event: IDEEventStarted, Timestamp: time.Now()},
+		{Event: IDEEventFailed, Timestamp: time.Now(), Detail: "systemd error"},
+	}
+	got := r.Resolve(events)
+	if got != StatusFailed {
+		t.Errorf("expected %q, got %q", StatusFailed, got)
+	}
+}
+
+func TestIDEStatusResolver_Stopped(t *testing.T) {
+	var r IDEStatusResolver
+	events := []IDEEventRecord{
+		{Event: IDEEventStarted, Timestamp: time.Now()},
+		{Event: IDEEventReady, Timestamp: time.Now()},
+		{Event: IDEEventStopped, Timestamp: time.Now()},
+	}
+	got := r.Resolve(events)
+	if got != StatusPending {
+		t.Errorf("expected %q after stop, got %q", StatusPending, got)
+	}
+}
+
+// --- Event record JSON tests ---
 
 func TestWorkspaceEventRecord_JSONRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
@@ -88,10 +258,41 @@ func TestWorkspaceEventRecord_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIDEEventRecord_JSONRoundTrip(t *testing.T) {
+	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	record := IDEEventRecord{
+		Event:     IDEEventStarted,
+		Timestamp: ts,
+		Detail:    "port=9100",
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got IDEEventRecord
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.Event != record.Event {
+		t.Errorf("event: expected %q, got %q", record.Event, got.Event)
+	}
+	if !got.Timestamp.Equal(record.Timestamp) {
+		t.Errorf("timestamp: expected %v, got %v", record.Timestamp, got.Timestamp)
+	}
+	if got.Detail != record.Detail {
+		t.Errorf("detail: expected %q, got %q", record.Detail, got.Detail)
+	}
+}
+
+// --- WorkspaceInstance JSON tests ---
+
 func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	inst := WorkspaceInstance{
-		Lifecycle: LifecycleProvisioning,
+		Status: StatusProvisioning,
 		Events: []WorkspaceEventRecord{
 			{Event: EventCloneStarted, Timestamp: ts},
 		},
@@ -113,160 +314,37 @@ func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	if got.Events[0].Event != EventCloneStarted {
 		t.Errorf("event: expected %q, got %q", EventCloneStarted, got.Events[0].Event)
 	}
-	if got.Lifecycle != LifecycleProvisioning {
-		t.Errorf("lifecycle: expected %q, got %q", LifecycleProvisioning, got.Lifecycle)
+	if got.Status != StatusProvisioning {
+		t.Errorf("status: expected %q, got %q", StatusProvisioning, got.Status)
 	}
 }
 
-func TestResolveLifecycleStatus_IgnoresIDEEvents(t *testing.T) {
-	// Workspace is Ready (worktree_created), then IDE events fire.
-	// Status must remain Ready regardless of IDE events.
-	baseEvents := []WorkspaceEventRecord{
-		{Event: EventCloneStarted, Timestamp: time.Now()},
-		{Event: EventCloneCompleted, Timestamp: time.Now()},
-		{Event: EventWorktreeCreating, Timestamp: time.Now()},
-		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+func TestWorkspaceInstance_IDEEventsJSON(t *testing.T) {
+	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
+	inst := WorkspaceInstance{
+		Status:    StatusReady,
+		IDEStatus: StatusReady,
+		IDEEvents: []IDEEventRecord{
+			{Event: IDEEventStarted, Timestamp: ts},
+			{Event: IDEEventReady, Timestamp: ts},
+		},
 	}
 
-	ideEvents := []WorkspaceEvent{
-		EventIDEStarted,
-		EventIDEReady,
-		EventIDEStopped,
-		EventIDEFailed,
+	data, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
 
-	for _, ide := range ideEvents {
-		events := append([]WorkspaceEventRecord{}, baseEvents...)
-		events = append(events, WorkspaceEventRecord{Event: ide, Timestamp: time.Now()})
-		got := ResolveLifecycleStatus(events)
-		if got != LifecycleReady {
-			t.Errorf("after %q: expected %q, got %q", ide, LifecycleReady, got)
-		}
-	}
-}
-
-func TestResolveLifecycleStatus_IDEEventsAfterFailed(t *testing.T) {
-	// Even if IDE events follow a provision_failed, status remains Failed.
-	events := []WorkspaceEventRecord{
-		{Event: EventCloneStarted, Timestamp: time.Now()},
-		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone error"},
-		{Event: EventIDEFailed, Timestamp: time.Now()},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleFailed {
-		t.Errorf("expected %q, got %q", LifecycleFailed, got)
-	}
-}
-
-func TestResolveLifecycleStatus_OnlyIDEEvents(t *testing.T) {
-	// If the only events are IDE events, status is Pending (no workspace events).
-	events := []WorkspaceEventRecord{
-		{Event: EventIDEStarted, Timestamp: time.Now()},
-		{Event: EventIDEReady, Timestamp: time.Now()},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecyclePending {
-		t.Errorf("expected %q for only-IDE events, got %q", LifecyclePending, got)
-	}
-}
-
-func TestResolveLifecycleStatus_IDEEventsAfterProvisioning(t *testing.T) {
-	// IDE events after an in-progress workspace event — status stays Provisioning.
-	events := []WorkspaceEventRecord{
-		{Event: EventCloneStarted, Timestamp: time.Now()},
-		{Event: EventIDEStarted, Timestamp: time.Now()},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleProvisioning {
-		t.Errorf("expected %q, got %q", LifecycleProvisioning, got)
-	}
-}
-
-func TestResolveLifecycleStatus_IgnoresHydrateEvents(t *testing.T) {
-	// Workspace is Ready (worktree_created), then hydrate events fire.
-	// Status must remain Ready regardless of hydrate events.
-	baseEvents := []WorkspaceEventRecord{
-		{Event: EventCloneStarted, Timestamp: time.Now()},
-		{Event: EventCloneCompleted, Timestamp: time.Now()},
-		{Event: EventWorktreeCreating, Timestamp: time.Now()},
-		{Event: EventWorktreeCreated, Timestamp: time.Now()},
+	var got WorkspaceInstance
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
 
-	hydrateEvents := []WorkspaceEvent{
-		EventHydrateStarted,
-		EventHydrateCompleted,
-		EventHydrateSkipped,
+	if len(got.IDEEvents) != 2 {
+		t.Fatalf("expected 2 IDE events, got %d", len(got.IDEEvents))
 	}
-
-	for _, he := range hydrateEvents {
-		events := append([]WorkspaceEventRecord{}, baseEvents...)
-		events = append(events, WorkspaceEventRecord{Event: he, Timestamp: time.Now()})
-		got := ResolveLifecycleStatus(events)
-		if got != LifecycleReady {
-			t.Errorf("after %q: expected %q, got %q", he, LifecycleReady, got)
-		}
-	}
-}
-
-func TestResolveLifecycleStatus_HydrateAfterFailed(t *testing.T) {
-	events := []WorkspaceEventRecord{
-		{Event: EventCloneStarted, Timestamp: time.Now()},
-		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone error"},
-		{Event: EventHydrateSkipped, Timestamp: time.Now(), Detail: "fetch failed"},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleFailed {
-		t.Errorf("expected %q, got %q", LifecycleFailed, got)
-	}
-}
-
-func TestResolveLifecycleStatus_OnlyHydrateEvents(t *testing.T) {
-	events := []WorkspaceEventRecord{
-		{Event: EventHydrateStarted, Timestamp: time.Now()},
-		{Event: EventHydrateCompleted, Timestamp: time.Now()},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecyclePending {
-		t.Errorf("expected %q for only-hydrate events, got %q", LifecyclePending, got)
-	}
-}
-
-func TestResolveLifecycleStatus_MixedInfoEvents(t *testing.T) {
-	// Workspace is Ready, followed by mixed IDE and hydrate events.
-	events := []WorkspaceEventRecord{
-		{Event: EventWorktreeCreated, Timestamp: time.Now()},
-		{Event: EventHydrateStarted, Timestamp: time.Now()},
-		{Event: EventHydrateCompleted, Timestamp: time.Now()},
-		{Event: EventIDEStarted, Timestamp: time.Now()},
-		{Event: EventHydrateSkipped, Timestamp: time.Now()},
-		{Event: EventIDEReady, Timestamp: time.Now()},
-	}
-	got := ResolveLifecycleStatus(events)
-	if got != LifecycleReady {
-		t.Errorf("expected %q, got %q", LifecycleReady, got)
-	}
-}
-
-func TestIsInfoEvent(t *testing.T) {
-	infoEvents := []WorkspaceEvent{
-		EventIDEStarted, EventIDEReady, EventIDEStopped, EventIDEFailed,
-		EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped,
-	}
-	for _, e := range infoEvents {
-		if !isInfoEvent(e) {
-			t.Errorf("expected isInfoEvent(%q) = true", e)
-		}
-	}
-
-	nonInfoEvents := []WorkspaceEvent{
-		EventCloneStarted, EventCloneCompleted,
-		EventWorktreeCreating, EventWorktreeCreated,
-		EventProvisionFailed, EventCloneDetected,
-	}
-	for _, e := range nonInfoEvents {
-		if isInfoEvent(e) {
-			t.Errorf("expected isInfoEvent(%q) = false", e)
-		}
+	if got.IDEStatus != StatusReady {
+		t.Errorf("ide_status: expected %q, got %q", StatusReady, got.IDEStatus)
 	}
 }
 
@@ -278,7 +356,7 @@ func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// Events and Lifecycle should be omitted from JSON when empty/zero
+	// Events, Status, IDEEvents, IDEStatus should be omitted from JSON when empty/zero
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal raw: %v", err)
@@ -286,7 +364,23 @@ func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 	if _, ok := raw["events"]; ok {
 		t.Error("expected events to be omitted from JSON when nil")
 	}
-	if _, ok := raw["lifecycle"]; ok {
-		t.Error("expected lifecycle to be omitted from JSON when empty")
+	if _, ok := raw["status"]; ok {
+		t.Error("expected status to be omitted from JSON when empty")
 	}
+	if _, ok := raw["ide_events"]; ok {
+		t.Error("expected ide_events to be omitted from JSON when nil")
+	}
+	if _, ok := raw["ide_status"]; ok {
+		t.Error("expected ide_status to be omitted from JSON when empty")
+	}
+}
+
+// --- StatusResolver interface compile-time checks ---
+
+func TestWorkspaceStatusResolver_ImplementsInterface(t *testing.T) {
+	var _ StatusResolver[WorkspaceEventRecord] = WorkspaceStatusResolver{}
+}
+
+func TestIDEStatusResolver_ImplementsInterface(t *testing.T) {
+	var _ StatusResolver[IDEEventRecord] = IDEStatusResolver{}
 }

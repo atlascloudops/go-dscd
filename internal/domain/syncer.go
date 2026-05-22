@@ -45,7 +45,7 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 
 		for name, inst := range instances {
 			report.WorkspacesChecked++
-			oldLifecycle := inst.Lifecycle
+			oldLifecycle := inst.Status
 
 			// Check clone — .git may be a directory (traditional clone) or
 			// a file (worktree with gitdir: pointer). Either means the
@@ -54,13 +54,13 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 			gitDir := filepath.Join(inst.Spec.ProjectRoot, ".git")
 			if _, statErr := os.Stat(gitDir); statErr == nil {
 				cloneExists = true
-				if inst.Lifecycle == LifecyclePending || inst.Lifecycle == LifecycleFailed {
+				if inst.Status == StatusPending || inst.Status == StatusFailed {
 					// Workspace appeared on disk — emit synthetic worktree_created
 					appendEvent(inst, EventCloneDetected, "detected by sync")
 					inst.LastError = nil
 				}
 			} else {
-				if inst.Lifecycle == LifecycleReady {
+				if inst.Status == StatusReady {
 					msg := "worktree missing from disk"
 					appendEvent(inst, EventProvisionFailed, msg)
 					inst.LastError = &msg
@@ -95,19 +95,19 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				err := s.ideAdapter.HealthCheck(ctx)
 				inst.IDE.Active = (err == nil)
 				if wasActive && !inst.IDE.Active {
-					appendEvent(inst, EventIDEStopped, "health check failed")
+					appendIDEEvent(inst, IDEEventStopped, "health check failed")
 					s.writeLog(name, "sync", "IDE became inactive")
 				}
 			}
 
 			inst.LastSyncedAt = &now
 
-			if inst.Lifecycle != oldLifecycle {
-				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, inst.Lifecycle)
+			if inst.Status != oldLifecycle {
+				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, inst.Status)
 				report.LifecycleChanges = append(report.LifecycleChanges, change)
 				s.writeLog(name, "sync", "%s", change)
 			} else {
-				s.writeLog(name, "sync", "Clone exists=%t, lifecycle confirmed: %s", cloneExists, inst.Lifecycle)
+				s.writeLog(name, "sync", "Clone exists=%t, lifecycle confirmed: %s", cloneExists, inst.Status)
 			}
 		}
 
