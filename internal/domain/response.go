@@ -27,12 +27,63 @@ const (
 	ErrCannotDeleteDefault = "CANNOT_DELETE_DEFAULT"
 )
 
+// IDEInfo is the clean response object for IDE state — exposed in inspect and
+// provision responses. It collapses the internal IDEInstance (with its full event
+// stream) into the three fields the client needs: adapter name, port, and whether
+// the IDE is currently active (healthy).
+type IDEInfo struct {
+	Adapter string `json:"adapter"`
+	Port    int    `json:"port"`
+	Active  bool   `json:"active"`
+}
+
+// IDEInfoFromInstance builds an IDEInfo from an IDEInstance, or returns nil when
+// the instance is nil. Active is true when the IDE status is Ready.
+func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
+	if ide == nil {
+		return nil
+	}
+	return &IDEInfo{
+		Adapter: ide.Adapter,
+		Port:    ide.Port,
+		Active:  ide.Status == StatusReady,
+	}
+}
+
 // WorkspaceInspectData extends WorkspaceInstance with worktree diagnostics for inspect responses.
+// The IDEInfo field provides a clean adapter/port/active view when IDE state exists.
 type WorkspaceInspectData struct {
 	WorkspaceInstance
 	BareRoot      string   `json:"bare_root"`
 	WorktreeCount int      `json:"worktree_count"`
 	Worktrees     []string `json:"worktrees"`
+	IDEInfo       *IDEInfo `json:"ide_info,omitempty"`
+}
+
+// WorkspaceListItem is the per-workspace entry in a list response. It includes
+// an optional IDEPort field (omitted when zero/no IDE active) so clients can
+// discover tunnel targets without inspecting each workspace individually.
+type WorkspaceListItem struct {
+	Spec       WorkspaceSpec          `json:"spec"`
+	Status     Status                 `json:"status,omitempty"`
+	HeadCommit string                 `json:"head_commit,omitempty"`
+	IDEPort    int                    `json:"ide_port,omitempty"`
+	Events     []WorkspaceEventRecord `json:"events,omitempty"`
+}
+
+// WorkspaceListItemFromInstance builds a WorkspaceListItem from an instance.
+// IDEPort is set only when the IDE is active (status == Ready).
+func WorkspaceListItemFromInstance(inst *WorkspaceInstance) WorkspaceListItem {
+	item := WorkspaceListItem{
+		Spec:       inst.Spec,
+		Status:     inst.Status,
+		HeadCommit: inst.HeadCommit,
+		Events:     inst.Events,
+	}
+	if inst.IDE != nil && inst.IDE.Status == StatusReady {
+		item.IDEPort = inst.IDE.Port
+	}
+	return item
 }
 
 func OkResponse(command string, data interface{}) Response {
