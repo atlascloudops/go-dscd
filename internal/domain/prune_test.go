@@ -37,7 +37,7 @@ func TestPrune_NoNonDefaultWorktrees(t *testing.T) {
 			BareRoot:     "/tmp/fake/.bare",
 			Owner:        "user",
 		},
-		State: StateReady,
+		Lifecycle: LifecycleReady,
 	}
 
 	p := &Provisioner{}

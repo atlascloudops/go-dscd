@@ -91,7 +91,6 @@ func TestWorkspaceEventRecord_JSONRoundTrip(t *testing.T) {
 func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	inst := WorkspaceInstance{
-		State:     StatePending,
 		Lifecycle: LifecycleProvisioning,
 		Events: []WorkspaceEventRecord{
 			{Event: EventCloneStarted, Timestamp: ts},
@@ -184,9 +183,7 @@ func TestResolveLifecycleStatus_IDEEventsAfterProvisioning(t *testing.T) {
 }
 
 func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
-	inst := WorkspaceInstance{
-		State: StatePending,
-	}
+	inst := WorkspaceInstance{}
 
 	data, err := json.Marshal(inst)
 	if err != nil {

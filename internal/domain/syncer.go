@@ -10,7 +10,7 @@ import (
 
 type SyncReport struct {
 	WorkspacesChecked int      `json:"workspaces_checked"`
-	StateChanges      []string `json:"state_changes"`
+	LifecycleChanges  []string `json:"lifecycle_changes"`
 	Errors            []string `json:"errors"`
 }
 
@@ -36,23 +36,24 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 
 		for name, inst := range instances {
 			report.WorkspacesChecked++
-			oldState := inst.State
+			oldLifecycle := inst.Lifecycle
 
 			// Check clone — .git may be a directory (traditional clone) or
-		// a file (worktree with gitdir: pointer). Either means the
-		// workspace exists on disk.
+			// a file (worktree with gitdir: pointer). Either means the
+			// workspace exists on disk.
+			cloneExists := false
 			gitDir := filepath.Join(inst.Spec.ProjectRoot, ".git")
 			if _, statErr := os.Stat(gitDir); statErr == nil {
-				inst.CloneExists = true
-				if inst.State == StatePending || inst.State == StateError {
-					inst.State = StateReady
+				cloneExists = true
+				if inst.Lifecycle == LifecyclePending || inst.Lifecycle == LifecycleFailed {
+					// Workspace appeared on disk — emit synthetic worktree_created
+					appendEvent(inst, EventCloneDetected, "detected by sync")
 					inst.LastError = nil
 				}
 			} else {
-				inst.CloneExists = false
-				if inst.State == StateReady {
-					inst.State = StateError
+				if inst.Lifecycle == LifecycleReady {
 					msg := "worktree missing from disk"
+					appendEvent(inst, EventProvisionFailed, msg)
 					inst.LastError = &msg
 				}
 			}
@@ -66,22 +67,21 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				inst.CredentialFresh = false
 			}
 
-			// Refresh head commit and derive status
-			if inst.CloneExists {
+			// Refresh head commit
+			if cloneExists {
 				inst.HeadCommit = ResolveHeadCommit(inst.Spec.ProjectRoot, inst.Spec.Owner)
 			} else {
 				inst.HeadCommit = ""
 			}
-			inst.DeriveStatus()
 
 			inst.LastSyncedAt = &now
 
-			if inst.State != oldState {
-				change := fmt.Sprintf("%s: %s -> %s", name, oldState, inst.State)
-				report.StateChanges = append(report.StateChanges, change)
+			if inst.Lifecycle != oldLifecycle {
+				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, inst.Lifecycle)
+				report.LifecycleChanges = append(report.LifecycleChanges, change)
 				s.writeLog(name, "sync", "%s", change)
 			} else {
-				s.writeLog(name, "sync", "Clone exists=%t, state confirmed: %s", inst.CloneExists, inst.State)
+				s.writeLog(name, "sync", "Clone exists=%t, lifecycle confirmed: %s", cloneExists, inst.Lifecycle)
 			}
 		}
 

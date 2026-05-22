@@ -11,6 +11,7 @@ const (
 	EventWorktreeCreating WorkspaceEvent = "worktree_creating"
 	EventWorktreeCreated  WorkspaceEvent = "worktree_created"
 	EventProvisionFailed  WorkspaceEvent = "provision_failed"
+	EventCloneDetected    WorkspaceEvent = "clone_detected"
 
 	// IDE events — informational only; these do NOT affect workspace lifecycle status.
 	EventIDEStarted WorkspaceEvent = "ide_started"
@@ -64,7 +65,7 @@ func ResolveLifecycleStatus(events []WorkspaceEventRecord) LifecycleStatus {
 		switch events[i].Event {
 		case EventProvisionFailed:
 			return LifecycleFailed
-		case EventWorktreeCreated:
+		case EventWorktreeCreated, EventCloneDetected:
 			return LifecycleReady
 		default:
 			return LifecycleProvisioning

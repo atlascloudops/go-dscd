@@ -33,7 +33,6 @@ type WorkspaceInspectData struct {
 	BareRoot      string   `json:"bare_root"`
 	WorktreeCount int      `json:"worktree_count"`
 	Worktrees     []string `json:"worktrees"`
-	CredFresh     bool     `json:"credential_fresh"`
 }
 
 func OkResponse(command string, data interface{}) Response {

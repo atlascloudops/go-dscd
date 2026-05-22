@@ -14,8 +14,8 @@ func TestSync_PendingWithClone(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StatePending,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecyclePending,
 	}
 
 	s := NewSyncer(store, filepath.Join(dir, "logs"))
@@ -26,11 +26,16 @@ func TestSync_PendingWithClone(t *testing.T) {
 	if report.WorkspacesChecked != 1 {
 		t.Fatalf("expected 1 checked, got %d", report.WorkspacesChecked)
 	}
-	if len(report.StateChanges) != 1 {
-		t.Fatalf("expected 1 state change, got %d", len(report.StateChanges))
+	if len(report.LifecycleChanges) != 1 {
+		t.Fatalf("expected 1 lifecycle change, got %d", len(report.LifecycleChanges))
 	}
-	if store.instances["ws1"].State != StateReady {
-		t.Fatalf("expected ready, got %s", store.instances["ws1"].State)
+	if store.instances["ws1"].Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", store.instances["ws1"].Lifecycle)
+	}
+	// Should have emitted a clone_detected event
+	lastEvent := store.instances["ws1"].Events[len(store.instances["ws1"].Events)-1]
+	if lastEvent.Event != EventCloneDetected {
+		t.Fatalf("expected clone_detected event, got %s", lastEvent.Event)
 	}
 }
 
@@ -40,8 +45,8 @@ func TestSync_ReadyWithoutClone(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StateReady,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecycleReady,
 	}
 
 	s := NewSyncer(store, filepath.Join(dir, "logs"))
@@ -49,14 +54,14 @@ func TestSync_ReadyWithoutClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.instances["ws1"].State != StateError {
-		t.Fatalf("expected error, got %s", store.instances["ws1"].State)
+	if store.instances["ws1"].Lifecycle != LifecycleFailed {
+		t.Fatalf("expected failed, got %s", store.instances["ws1"].Lifecycle)
 	}
 	if store.instances["ws1"].LastError == nil {
 		t.Fatal("expected last_error to be set")
 	}
-	if len(report.StateChanges) != 1 {
-		t.Fatalf("expected 1 state change, got %d", len(report.StateChanges))
+	if len(report.LifecycleChanges) != 1 {
+		t.Fatalf("expected 1 lifecycle change, got %d", len(report.LifecycleChanges))
 	}
 }
 
@@ -67,8 +72,8 @@ func TestSync_Idempotent(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StateReady,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecycleReady,
 	}
 
 	s := NewSyncer(store, filepath.Join(dir, "logs"))
@@ -76,11 +81,11 @@ func TestSync_Idempotent(t *testing.T) {
 	report1, _ := s.Sync()
 	report2, _ := s.Sync()
 
-	if len(report1.StateChanges) != 0 {
-		t.Fatalf("first sync should have no changes for ready+exists, got %v", report1.StateChanges)
+	if len(report1.LifecycleChanges) != 0 {
+		t.Fatalf("first sync should have no changes for ready+exists, got %v", report1.LifecycleChanges)
 	}
-	if len(report2.StateChanges) != 0 {
-		t.Fatalf("second sync should have no changes, got %v", report2.StateChanges)
+	if len(report2.LifecycleChanges) != 0 {
+		t.Fatalf("second sync should have no changes, got %v", report2.LifecycleChanges)
 	}
 }
 
@@ -91,8 +96,8 @@ func TestSync_SetsTimestamp(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StateReady,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecycleReady,
 	}
 
 	before := time.Now().UTC()
@@ -109,8 +114,6 @@ func TestSync_SetsTimestamp(t *testing.T) {
 }
 
 func TestSync_PendingWithWorktreeGitFile(t *testing.T) {
-	// Worktree-native .git is a file (gitdir: pointer), not a directory.
-	// Sync must detect this as an existing workspace.
 	dir := t.TempDir()
 	projectRoot := filepath.Join(dir, "repo", ".worktrees", "feature")
 	os.MkdirAll(projectRoot, 0755)
@@ -118,8 +121,8 @@ func TestSync_PendingWithWorktreeGitFile(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StatePending,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecyclePending,
 	}
 
 	s := NewSyncer(store, filepath.Join(dir, "logs"))
@@ -130,27 +133,22 @@ func TestSync_PendingWithWorktreeGitFile(t *testing.T) {
 	if report.WorkspacesChecked != 1 {
 		t.Fatalf("expected 1 checked, got %d", report.WorkspacesChecked)
 	}
-	if len(report.StateChanges) != 1 {
-		t.Fatalf("expected 1 state change, got %d", len(report.StateChanges))
+	if len(report.LifecycleChanges) != 1 {
+		t.Fatalf("expected 1 lifecycle change, got %d", len(report.LifecycleChanges))
 	}
-	if store.instances["ws1"].State != StateReady {
-		t.Fatalf("expected ready, got %s", store.instances["ws1"].State)
-	}
-	if !store.instances["ws1"].CloneExists {
-		t.Fatal("expected clone_exists=true for worktree .git file")
+	if store.instances["ws1"].Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", store.instances["ws1"].Lifecycle)
 	}
 }
 
 func TestSync_ReadyWorktreeRemovedFromDisk(t *testing.T) {
-	// If a worktree's .git file disappears, sync should mark it as error.
 	dir := t.TempDir()
 	projectRoot := filepath.Join(dir, "repo", ".worktrees", "gone")
-	// Don't create anything — simulates deleted worktree
 
 	store := newMemStore()
 	store.instances["ws1"] = &WorkspaceInstance{
-		Spec:  WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
-		State: StateReady,
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecycleReady,
 	}
 
 	s := NewSyncer(store, filepath.Join(dir, "logs"))
@@ -158,8 +156,8 @@ func TestSync_ReadyWorktreeRemovedFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.instances["ws1"].State != StateError {
-		t.Fatalf("expected error, got %s", store.instances["ws1"].State)
+	if store.instances["ws1"].Lifecycle != LifecycleFailed {
+		t.Fatalf("expected failed, got %s", store.instances["ws1"].Lifecycle)
 	}
 	if store.instances["ws1"].LastError == nil {
 		t.Fatal("expected last_error to be set")
@@ -167,7 +165,33 @@ func TestSync_ReadyWorktreeRemovedFromDisk(t *testing.T) {
 	if *store.instances["ws1"].LastError != "worktree missing from disk" {
 		t.Fatalf("expected 'worktree missing from disk', got %q", *store.instances["ws1"].LastError)
 	}
-	if len(report.StateChanges) != 1 {
-		t.Fatalf("expected 1 state change, got %d", len(report.StateChanges))
+	if len(report.LifecycleChanges) != 1 {
+		t.Fatalf("expected 1 lifecycle change, got %d", len(report.LifecycleChanges))
+	}
+}
+
+func TestSync_CloneDetectedEvent(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := filepath.Join(dir, "repo")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	store := newMemStore()
+	store.instances["ws1"] = &WorkspaceInstance{
+		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Lifecycle: LifecycleFailed,
+	}
+
+	s := NewSyncer(store, filepath.Join(dir, "logs"))
+	s.Sync()
+
+	if store.instances["ws1"].Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready after clone detected, got %s", store.instances["ws1"].Lifecycle)
+	}
+	lastEvent := store.instances["ws1"].Events[len(store.instances["ws1"].Events)-1]
+	if lastEvent.Event != EventCloneDetected {
+		t.Fatalf("expected clone_detected event, got %s", lastEvent.Event)
+	}
+	if lastEvent.Detail != "detected by sync" {
+		t.Fatalf("expected detail 'detected by sync', got %q", lastEvent.Detail)
 	}
 }

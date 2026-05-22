@@ -33,41 +33,40 @@ func (p *Provisioner) Provision(store StateStore, spec WorkspaceSpec) (*Workspac
 		return p.provisionBareCloneAndDefault(store, spec)
 	}
 
-	if !bareExists {
-		// Non-default worktree requested but no bare clone — create bare clone first
-		if err := p.bareClone(spec); err != nil {
-			return nil, err
-		}
-	}
-
-	return p.provisionWorktree(store, spec)
+	return p.provisionWorktree(store, spec, !bareExists)
 }
 
 // returnIdempotent handles the case where the worktree already exists.
 func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*WorkspaceInstance, error) {
 	now := time.Now().UTC()
 	p.writeLog(spec.Name, "provision", "Worktree already exists at %s, skipping", spec.ProjectRoot)
-	inst := &WorkspaceInstance{
-		Spec:            spec,
-		State:           StateReady,
-		CloneExists:     true,
-		CredentialHost:  spec.VCS.Host,
-		CredentialFresh: p.checkCredentialFresh(spec),
-		HeadCommit:      ResolveHeadCommit(spec.ProjectRoot, spec.Owner),
-		ProvisionedAt:   &now,
-	}
-	inst.DeriveStatus()
+
+	// Load existing instance to preserve event history
+	var inst *WorkspaceInstance
 	if err := store.WithLock(func() error {
 		instances, err := store.Load()
 		if err != nil {
 			return err
 		}
+		if existing, ok := instances[spec.Name]; ok {
+			inst = existing
+			inst.Spec = spec
+		} else {
+			inst = &WorkspaceInstance{
+				Spec:          spec,
+				CredentialHost: spec.VCS.Host,
+				ProvisionedAt:  &now,
+			}
+			appendEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
+		}
+		inst.CredentialFresh = p.checkCredentialFresh(spec)
+		inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 		instances[spec.Name] = inst
 		return store.Save(instances)
 	}); err != nil {
 		return nil, err
 	}
-	p.writeLog(spec.Name, "provision", "State: ready (idempotent)")
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s (idempotent)", inst.Lifecycle)
 	return inst, nil
 }
 
@@ -78,10 +77,10 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 
 	inst := &WorkspaceInstance{
 		Spec:           spec,
-		State:          StateProvisioning,
 		CredentialHost: spec.VCS.Host,
 		ProvisionedAt:  &now,
 	}
+	appendEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
 
 	// 1. mkdir -p <repo_root>
 	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
@@ -91,10 +90,8 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	// 2. git clone --bare <clone_url> <bare_root>
 	if err := p.bareClone(spec); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-		inst.State = StateError
+		appendEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
-		inst.CloneExists = false
-		inst.DeriveStatus()
 		p.persistState(store, spec.Name, inst)
 		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
@@ -103,6 +100,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 			Detail:  err.Error(),
 		}
 	}
+	appendEvent(inst, EventCloneCompleted, "")
 
 	// 3. Resolve default branch
 	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
@@ -113,13 +111,12 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	p.writeLog(spec.Name, "provision", "Default branch resolved: %s", defaultBranch)
 
 	// 4. git -C <bare_root> worktree add ../default <default_branch>
+	appendEvent(inst, EventWorktreeCreating, defaultBranch)
 	worktreePath := filepath.Join(spec.RepoRoot, "default")
 	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		inst.State = StateError
+		appendEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
-		inst.CloneExists = false
-		inst.DeriveStatus()
 		p.persistState(store, spec.Name, inst)
 		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
@@ -128,33 +125,49 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 			Detail:  err.Error(),
 		}
 	}
+	appendEvent(inst, EventWorktreeCreated, defaultBranch)
 
 	p.writeLog(spec.Name, "provision", "Bare clone + default worktree complete")
 
-	inst.State = StateReady
-	inst.CloneExists = true
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
-	inst.DeriveStatus()
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "State: ready")
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
 	return inst, nil
 }
 
 // provisionWorktree adds a worktree from an existing bare clone.
-func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec) (*WorkspaceInstance, error) {
+// If needsBareClone is true, the bare clone is created first with clone events.
+func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, needsBareClone bool) (*WorkspaceInstance, error) {
 	now := time.Now().UTC()
 	p.writeLog(spec.Name, "provision", "Adding worktree %s (branch: %s)", spec.WorktreeName, spec.VCS.Branch)
 
 	inst := &WorkspaceInstance{
 		Spec:           spec,
-		State:          StateProvisioning,
 		CredentialHost: spec.VCS.Host,
 		ProvisionedAt:  &now,
+	}
+
+	// If bare clone doesn't exist yet, create it with events
+	if needsBareClone {
+		appendEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
+		if err := p.bareClone(spec); err != nil {
+			errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
+			appendEvent(inst, EventProvisionFailed, errMsg)
+			inst.LastError = &errMsg
+			p.persistState(store, spec.Name, inst)
+			p.writeLog(spec.Name, "error", "%s", errMsg)
+			return inst, &ProvisionError{
+				Code:    ErrCloneFailed,
+				Message: "git clone --bare failed",
+				Detail:  err.Error(),
+			}
+		}
+		appendEvent(inst, EventCloneCompleted, "")
 	}
 
 	// Determine worktree path
@@ -174,12 +187,11 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec) (*
 	p.fetchBranch(spec.BareRoot, spec.VCS.Branch, spec.Owner)
 
 	// git -C <bare_root> worktree add <path> <branch>
+	appendEvent(inst, EventWorktreeCreating, spec.VCS.Branch)
 	if err := p.addWorktree(spec.BareRoot, worktreePath, spec.VCS.Branch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		inst.State = StateError
+		appendEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
-		inst.CloneExists = false
-		inst.DeriveStatus()
 		p.persistState(store, spec.Name, inst)
 		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
@@ -188,20 +200,18 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec) (*
 			Detail:  err.Error(),
 		}
 	}
+	appendEvent(inst, EventWorktreeCreated, spec.VCS.Branch)
 
 	p.writeLog(spec.Name, "provision", "Worktree add complete")
 
-	inst.State = StateReady
-	inst.CloneExists = true
 	inst.CredentialFresh = p.checkCredentialFresh(spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
-	inst.DeriveStatus()
 
 	if err := p.persistState(store, spec.Name, inst); err != nil {
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "State: ready")
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Lifecycle)
 	return inst, nil
 }
 

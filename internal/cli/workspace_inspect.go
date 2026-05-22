@@ -34,8 +34,6 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 1)
 			}
 
-			enrichLiveness(inst)
-
 			// Enumerate worktrees from the bare clone (inspect-only, not list)
 			worktrees, _ := domain.ListWorktrees(inst.Spec.BareRoot, inst.Spec.Owner)
 			inspectData := domain.WorkspaceInspectData{
@@ -43,7 +41,6 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				BareRoot:         inst.Spec.BareRoot,
 				WorktreeCount:    len(worktrees),
 				Worktrees:        worktrees,
-				CredFresh:        inst.CredentialFresh,
 			}
 
 			if jsonOutput {
@@ -52,7 +49,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			}
 
 			credStatus := "stale"
-			if inspectData.CredFresh {
+			if inst.CredentialFresh {
 				credStatus = "fresh"
 			}
 
@@ -62,13 +59,27 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			fmt.Fprintf(os.Stdout, "Branch:          %s\n", inst.Spec.VCS.Branch)
 			fmt.Fprintf(os.Stdout, "Project Root:    %s\n", inst.Spec.ProjectRoot)
 			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", inspectData.BareRoot)
-			fmt.Fprintf(os.Stdout, "State:           %s\n", inst.State)
-			fmt.Fprintf(os.Stdout, "Status:          %s\n", inst.Status)
+			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", inst.Lifecycle)
 			fmt.Fprintf(os.Stdout, "Head Commit:     %s\n", inst.HeadCommit)
 			fmt.Fprintf(os.Stdout, "Credential:      %s (%s)\n", inst.CredentialHost, credStatus)
 			fmt.Fprintf(os.Stdout, "Worktree Count:  %d\n", inspectData.WorktreeCount)
 			if len(inspectData.Worktrees) > 0 {
 				fmt.Fprintf(os.Stdout, "Worktrees:       %s\n", strings.Join(inspectData.Worktrees, ", "))
+			}
+			if len(inst.Events) > 0 {
+				fmt.Fprintf(os.Stdout, "Events:\n")
+				start := 0
+				if len(inst.Events) > 10 {
+					start = len(inst.Events) - 10
+				}
+				for _, ev := range inst.Events[start:] {
+					ts := ev.Timestamp.Format("2006-01-02T15:04:05Z")
+					if ev.Detail != "" {
+						fmt.Fprintf(os.Stdout, "  %s  %s  (%s)\n", ts, ev.Event, ev.Detail)
+					} else {
+						fmt.Fprintf(os.Stdout, "  %s  %s\n", ts, ev.Event)
+					}
+				}
 			}
 			if inst.LastSyncedAt != nil {
 				fmt.Fprintf(os.Stdout, "Last Synced:     %s\n", inst.LastSyncedAt.Format("2006-01-02T15:04:05Z"))

@@ -193,19 +193,16 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.State != StateReady {
-		t.Fatalf("expected ready, got %s", inst.State)
-	}
-	if !inst.CloneExists {
-		t.Fatal("expected clone_exists=true")
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
 	}
 
 	saved := store.instances["test"]
 	if saved == nil {
 		t.Fatal("workspace not persisted")
 	}
-	if saved.State != StateReady {
-		t.Fatalf("persisted state should be ready, got %s", saved.State)
+	if saved.Lifecycle != LifecycleReady {
+		t.Fatalf("persisted lifecycle should be ready, got %s", saved.Lifecycle)
 	}
 }
 
@@ -237,11 +234,8 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if inst.State != StateReady {
-		t.Fatalf("expected ready, got %s", inst.State)
-	}
-	if !inst.CloneExists {
-		t.Fatal("expected clone_exists=true for worktree file")
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
 	}
 }
 
@@ -339,11 +333,8 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	if !worktreeExists(projectRoot) {
 		t.Fatal("default/ worktree was not created")
 	}
-	if inst.State != StateReady {
-		t.Fatalf("expected ready, got %s", inst.State)
-	}
-	if inst.Status != "SYNCED" {
-		t.Fatalf("expected SYNCED, got %s", inst.Status)
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
 	}
 	if inst.HeadCommit == "" {
 		t.Fatal("expected non-empty head commit")
@@ -364,8 +355,8 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
-	if inst2.State != StateReady {
-		t.Fatalf("expected ready on re-provision, got %s", inst2.State)
+	if inst2.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready on re-provision, got %s", inst2.Lifecycle)
 	}
 }
 
@@ -424,11 +415,8 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	if !worktreeExists(featureRoot) {
 		t.Fatal(".worktrees/feature-vpc/ worktree was not created")
 	}
-	if inst.State != StateReady {
-		t.Fatalf("expected ready, got %s", inst.State)
-	}
-	if inst.Status != "SYNCED" {
-		t.Fatalf("expected SYNCED, got %s", inst.Status)
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
 	}
 
 	// Verify .git in feature worktree is a file
@@ -489,8 +477,8 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	if !worktreeExists(featureRoot) {
 		t.Fatal("worktree should exist")
 	}
-	if inst.State != StateReady {
-		t.Fatalf("expected ready, got %s", inst.State)
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("expected ready, got %s", inst.Lifecycle)
 	}
 }
 
@@ -533,11 +521,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 3: default provision failed: %v", err)
 	}
-	if inst.State != StateReady {
-		t.Fatalf("step 3: expected ready, got %s", inst.State)
-	}
-	if inst.Status != "SYNCED" {
-		t.Fatalf("step 3: expected SYNCED, got %s", inst.Status)
+	if inst.Lifecycle != LifecycleReady {
+		t.Fatalf("step 3: expected ready, got %s", inst.Lifecycle)
 	}
 
 	// --- Step 4: Verify bare clone structure ---
@@ -577,8 +562,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 5: experiment provision failed: %v", err)
 	}
-	if inst2.State != StateReady {
-		t.Fatalf("step 5: expected ready, got %s", inst2.State)
+	if inst2.Lifecycle != LifecycleReady {
+		t.Fatalf("step 5: expected ready, got %s", inst2.Lifecycle)
 	}
 	// Verify .git file in experiment worktree
 	expGit := filepath.Join(experimentRoot, ".git")
@@ -728,18 +713,18 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	// Cleanup spike-a for next steps
 	_, _ = p.Deprovision(store, "ocr-service/spike-a", true)
 
-	// --- Step 17: Sync detects corrupted state ---
-	store.instances["ocr-service"].State = StatePending // manually corrupt
+	// --- Step 17: Sync detects corrupted lifecycle ---
+	store.instances["ocr-service"].Lifecycle = LifecyclePending // manually corrupt
 	syncer := NewSyncer(store, filepath.Join(dir, "logs"))
 	report, err := syncer.Sync()
 	if err != nil {
 		t.Fatalf("step 17: sync failed: %v", err)
 	}
-	if store.instances["ocr-service"].State != StateReady {
-		t.Fatalf("step 17: expected ready after sync, got %s", store.instances["ocr-service"].State)
+	if store.instances["ocr-service"].Lifecycle != LifecycleReady {
+		t.Fatalf("step 17: expected ready after sync, got %s", store.instances["ocr-service"].Lifecycle)
 	}
-	if len(report.StateChanges) == 0 {
-		t.Fatal("step 17: expected state changes in sync report")
+	if len(report.LifecycleChanges) == 0 {
+		t.Fatal("step 17: expected lifecycle changes in sync report")
 	}
 	if store.instances["ocr-service"].LastSyncedAt == nil {
 		t.Fatal("step 17: expected last_synced_at to be set")
@@ -750,8 +735,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step 19: idempotent re-provision failed: %v", err)
 	}
-	if inst3.State != StateReady {
-		t.Fatalf("step 19: expected ready on re-provision, got %s", inst3.State)
+	if inst3.Lifecycle != LifecycleReady {
+		t.Fatalf("step 19: expected ready on re-provision, got %s", inst3.Lifecycle)
 	}
 
 	// --- Verify response schema version is v2 ---

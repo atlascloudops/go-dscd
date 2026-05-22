@@ -37,7 +37,7 @@ func TestDeprovision_CannotDeleteDefault(t *testing.T) {
 			BareRoot:     "/tmp/fake/.bare",
 			Owner:        "user",
 		},
-		State: StateReady,
+		Lifecycle: LifecycleReady,
 	}
 
 	p := &Provisioner{}

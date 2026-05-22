@@ -269,7 +269,7 @@ func TestIDEState_JSONRoundTrip(t *testing.T) {
 
 func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
 	inst := WorkspaceInstance{
-		State: StatePending,
+		Lifecycle: LifecyclePending,
 		IDE: &IDEState{
 			AdapterName: "openvscode-server",
 			Port:        9100,
@@ -300,7 +300,7 @@ func TestWorkspaceInstance_IDEStateJSON(t *testing.T) {
 
 func TestWorkspaceInstance_IDEStateOmittedWhenNil(t *testing.T) {
 	inst := WorkspaceInstance{
-		State: StatePending,
+		Lifecycle: LifecyclePending,
 	}
 
 	data, err := json.Marshal(inst)
