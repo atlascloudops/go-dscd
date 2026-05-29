@@ -13,6 +13,11 @@ const (
 	EventProvisionFailed  WorkspaceEvent = "provision_failed"
 	EventCloneDetected    WorkspaceEvent = "clone_detected"
 
+	// Template provisioning events — informational; do NOT affect workspace lifecycle status.
+	EventTemplateCloneStarted   WorkspaceEvent = "template_clone_started"
+	EventTemplateCloneCompleted WorkspaceEvent = "template_clone_completed"
+	EventTemplateReinitCompleted WorkspaceEvent = "template_reinit_completed"
+
 	// Informational workspace events — these do NOT affect workspace lifecycle status.
 	EventGitCredentialsExist WorkspaceEvent = "git_credentials_exist"
 
@@ -80,7 +85,8 @@ func (WorkspaceStatusResolver) Resolve(events []WorkspaceEventRecord) Status {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Event {
 		case EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped,
-			EventGitCredentialsExist:
+			EventGitCredentialsExist,
+			EventTemplateCloneStarted, EventTemplateCloneCompleted, EventTemplateReinitCompleted:
 			// Informational — skip
 			continue
 		case EventProvisionFailed:

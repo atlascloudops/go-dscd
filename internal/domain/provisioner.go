@@ -32,6 +32,11 @@ func (p *Provisioner) Provision(store StateStore, spec WorkspaceSpec) (*Workspac
 		return p.returnIdempotent(store, spec)
 	}
 
+	// Template provisioning path: reinit git history from template repo
+	if spec.Template != nil {
+		return p.provisionTemplate(store, spec)
+	}
+
 	bareExists := dirExists(spec.BareRoot)
 
 	if spec.IsDefault && !bareExists {
@@ -159,6 +164,300 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 
 	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
+}
+
+// provisionTemplate creates a workspace from a template repository.
+// It clones the template, strips .git, reinitialises as a bare+worktree,
+// copies template files, configures remotes, and makes an initial commit.
+//
+// Strategy (compatible with git < 2.42 which lacks --orphan):
+//  1. Clone template into temp dir, strip .git
+//  2. git init a scratch repo, copy template files, commit
+//  3. git clone --bare scratch into .bare/
+//  4. Remove scratch, add worktree from bare
+//  5. Configure remotes on the bare repo
+func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*WorkspaceInstance, error) {
+	now := time.Now().UTC()
+	tmpl := spec.Template
+	p.writeLog(spec.Name, "provision", "Template provisioning from %s", tmpl.CloneURL)
+
+	inst := &WorkspaceInstance{
+		Spec:           spec,
+		CredentialHost: tmpl.Host,
+		ProvisionedAt:  &now,
+	}
+
+	// 1. Clone template into a temporary directory
+	appendEvent(inst, EventTemplateCloneStarted, tmpl.CloneURL)
+	tmpDir := filepath.Join(spec.RepoRoot, ".template-tmp")
+	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
+		return nil, fmt.Errorf("create repo root: %w", err)
+	}
+
+	if err := p.cloneInto(tmpl.CloneURL, tmpDir, spec.Owner); err != nil {
+		errMsg := fmt.Sprintf("template clone failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		p.writeLog(spec.Name, "error", "%s", errMsg)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "template clone failed",
+			Detail:  err.Error(),
+		}
+	}
+	appendEvent(inst, EventTemplateCloneCompleted, "")
+	p.writeLog(spec.Name, "provision", "Template cloned to %s", tmpDir)
+
+	// 2. Strip .git from the cloned content
+	os.RemoveAll(filepath.Join(tmpDir, ".git"))
+
+	// 3. Init a scratch repo, copy template files in, and commit
+	scratchDir := filepath.Join(spec.RepoRoot, ".template-scratch")
+	if err := p.gitInit(scratchDir, spec.Owner); err != nil {
+		errMsg := fmt.Sprintf("git init (scratch) failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		os.RemoveAll(tmpDir)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "git init failed",
+			Detail:  err.Error(),
+		}
+	}
+
+	if err := p.copyDir(tmpDir, scratchDir); err != nil {
+		errMsg := fmt.Sprintf("copy template files failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		os.RemoveAll(tmpDir)
+		os.RemoveAll(scratchDir)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "copy template files failed",
+			Detail:  err.Error(),
+		}
+	}
+	os.RemoveAll(tmpDir)
+
+	commitMsg := fmt.Sprintf("Initial commit from template %s", tmpl.Repo)
+	if err := p.gitAddAndCommit(scratchDir, commitMsg, spec.Owner); err != nil {
+		errMsg := fmt.Sprintf("initial commit failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		os.RemoveAll(scratchDir)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "initial commit failed",
+			Detail:  err.Error(),
+		}
+	}
+
+	// 4. Clone bare from scratch, then create worktree
+	if err := p.bareCloneLocal(scratchDir, spec.BareRoot, spec.Owner); err != nil {
+		errMsg := fmt.Sprintf("git clone --bare (from scratch) failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		os.RemoveAll(scratchDir)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "git clone --bare failed",
+			Detail:  err.Error(),
+		}
+	}
+	os.RemoveAll(scratchDir)
+
+	// Remove the "origin" remote that clone --bare created (points to scratch)
+	p.gitRemoteRemove(spec.BareRoot, "origin", spec.Owner)
+
+	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
+	if err != nil {
+		defaultBranch = "main"
+	}
+
+	worktreePath := filepath.Join(spec.RepoRoot, "default")
+	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
+		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
+		appendEvent(inst, EventProvisionFailed, errMsg)
+		inst.LastError = &errMsg
+		p.persistState(store, spec.Name, inst)
+		return inst, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "git worktree add (default) failed",
+			Detail:  err.Error(),
+		}
+	}
+
+	appendEvent(inst, EventTemplateReinitCompleted, tmpl.Repo)
+	appendEvent(inst, EventWorktreeCreated, defaultBranch)
+
+	// 5. Configure remotes on the bare repo
+	p.gitRemoteAdd(spec.BareRoot, "template", tmpl.CloneURL, spec.Owner)
+	p.gitRemoteSetPushURL(spec.BareRoot, "template", "no_push", spec.Owner)
+	if spec.VCS.CloneURL != "" {
+		p.gitRemoteAdd(spec.BareRoot, "origin", spec.VCS.CloneURL, spec.Owner)
+	}
+
+	p.writeLog(spec.Name, "provision", "Template provisioning complete")
+
+	p.checkCredentials(inst, spec)
+	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
+	p.startIDE(inst, spec)
+
+	if err := p.persistState(store, spec.Name, inst); err != nil {
+		return nil, err
+	}
+
+	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
+	return inst, nil
+}
+
+// cloneInto runs git clone <url> <dest> as the spec owner.
+func (p *Provisioner) cloneInto(url, dest, owner string) error {
+	cloneCmd := fmt.Sprintf("git clone %s %s", url, dest)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", cloneCmd)
+	} else {
+		cmd = exec.Command("git", "clone", url, dest)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// gitInit runs git init <path> as the owner (non-bare).
+func (p *Provisioner) gitInit(path, owner string) error {
+	initCmd := fmt.Sprintf("git init %s", path)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", initCmd)
+	} else {
+		cmd = exec.Command("git", "init", path)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// bareCloneLocal runs git clone --bare <src> <dst> as the owner.
+func (p *Provisioner) bareCloneLocal(src, dst, owner string) error {
+	cloneCmd := fmt.Sprintf("git clone --bare %s %s", src, dst)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", cloneCmd)
+	} else {
+		cmd = exec.Command("git", "clone", "--bare", src, dst)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// gitRemoteRemove runs git -C <bareRoot> remote remove <name> as owner.
+func (p *Provisioner) gitRemoteRemove(bareRoot, name, owner string) {
+	remoteCmd := fmt.Sprintf("git -C %s remote remove %s", bareRoot, name)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", remoteCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "remote", "remove", name)
+	}
+
+	_ = cmd.Run()
+}
+
+// copyDir copies all files and directories from src into dst.
+func (p *Provisioner) copyDir(src, dst string) error {
+	// Use cp -a for reliable recursive copy with permissions preserved
+	cmd := exec.Command("cp", "-a", src+"/.", dst+"/")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// gitRemoteAdd runs git -C <bareRoot> remote add <name> <url> as owner.
+func (p *Provisioner) gitRemoteAdd(bareRoot, name, url, owner string) {
+	remoteCmd := fmt.Sprintf("git -C %s remote add %s %s", bareRoot, name, url)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", remoteCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "remote", "add", name, url)
+	}
+
+	_ = cmd.Run()
+}
+
+// gitRemoteSetPushURL runs git -C <bareRoot> remote set-url --push <name> <url> as owner.
+func (p *Provisioner) gitRemoteSetPushURL(bareRoot, name, url, owner string) {
+	remoteCmd := fmt.Sprintf("git -C %s remote set-url --push %s %s", bareRoot, name, url)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", remoteCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "remote", "set-url", "--push", name, url)
+	}
+
+	_ = cmd.Run()
+}
+
+// gitAddAndCommit runs git add . && git commit in the worktree as owner.
+func (p *Provisioner) gitAddAndCommit(worktreePath, message, owner string) error {
+	addCommitCmd := fmt.Sprintf("cd %s && git add . && git -c user.name=dscd -c user.email=dscd@local commit -m %q", worktreePath, message)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", addCommitCmd)
+	} else {
+		cmd = exec.Command("sh", "-c", addCommitCmd)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// resolveTemplateRepo reads the template remote URL from a bare repo.
+// Returns empty string if the "template" remote does not exist.
+func ResolveTemplateRepo(bareRoot, owner string) string {
+	remoteCmd := fmt.Sprintf("git -C %s remote get-url template", bareRoot)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", remoteCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "remote", "get-url", "template")
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // provisionWorktree adds a worktree from an existing bare clone.
@@ -921,10 +1220,11 @@ func validateSpec(spec WorkspaceSpec) error {
 	if spec.Name == "" {
 		missing = append(missing, "name")
 	}
-	if spec.VCS.CloneURL == "" {
+	// VCS.CloneURL and VCS.Branch are required only when Template is absent
+	if spec.VCS.CloneURL == "" && spec.Template == nil {
 		missing = append(missing, "vcs.clone_url")
 	}
-	if spec.VCS.Branch == "" {
+	if spec.VCS.Branch == "" && spec.Template == nil {
 		missing = append(missing, "vcs.branch")
 	}
 	if spec.ProjectRoot == "" {
@@ -949,6 +1249,82 @@ func validateSpec(spec WorkspaceSpec) error {
 			Detail:  strings.Join(missing, ", "),
 		}
 	}
+
+	// Validate spec.Name for custom name safety.
+	if err := validateName(spec.Name); err != nil {
+		return err
+	}
+
+	// Template-specific validation
+	if spec.Template != nil {
+		if spec.Template.CloneURL == "" {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "template.clone_url is required when template is set",
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateName checks that a workspace name is safe for state file keying,
+// filesystem operations, and display. Custom names (not derived from repo slugs)
+// must satisfy these constraints:
+//   - Length <= 128 characters
+//   - At most one "/" separator (worktree notation: "name/branch")
+//   - No path traversal segments ("." or "..")
+//   - No null bytes or shell/filesystem-unsafe characters
+func validateName(name string) error {
+	// Length check
+	if len(name) > 128 {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "name too long",
+			Detail:  fmt.Sprintf("name must be <= 128 characters, got %d", len(name)),
+		}
+	}
+
+	// At most one "/" (worktree notation: "repo/branch")
+	segments := strings.Split(name, "/")
+	if len(segments) > 2 {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "name contains too many path segments",
+			Detail:  fmt.Sprintf("at most one '/' allowed (worktree notation), got %d segments", len(segments)),
+		}
+	}
+
+	// No path traversal or empty segments
+	for _, seg := range segments {
+		if seg == "" {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains empty segment",
+				Detail:  "name segments must be non-empty (no leading, trailing, or consecutive '/')",
+			}
+		}
+		if seg == "." || seg == ".." {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains path traversal",
+				Detail:  fmt.Sprintf("segment %q is not allowed", seg),
+			}
+		}
+	}
+
+	// No null bytes or shell/filesystem-unsafe characters
+	const unsafeChars = "\x00\\:*?\"<>|&;`$!#{}[]()'\n\r\t"
+	for _, ch := range name {
+		if strings.ContainsRune(unsafeChars, ch) {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains unsafe character",
+				Detail:  fmt.Sprintf("character %q (U+%04X) is not allowed in workspace names", ch, ch),
+			}
+		}
+	}
+
 	return nil
 }
 

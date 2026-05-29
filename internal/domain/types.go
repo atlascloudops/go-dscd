@@ -12,8 +12,16 @@ type WorkspaceSpec struct {
 	BareRoot     string    `json:"bare_root"`     // path to .bare/
 	WorktreeName string    `json:"worktree_name"` // "default" or branch-derived
 	IsDefault    bool      `json:"is_default"`    // true = bare clone + first worktree
-	Owner        string         `json:"owner"`
-	IDE          *IDESpecConfig `json:"ide,omitempty"`
+	Owner        string          `json:"owner"`
+	IDE          *IDESpecConfig  `json:"ide,omitempty"`
+	Template     *TemplateSource `json:"template,omitempty"`
+}
+
+// TemplateSource describes the template repository used to seed a workspace.
+type TemplateSource struct {
+	CloneURL string `json:"clone_url"`
+	Host     string `json:"host"`
+	Repo     string `json:"repo"`
 }
 
 // IDESpecConfig is the optional IDE configuration on a workspace spec.
@@ -27,7 +35,7 @@ type VCSTarget struct {
 	AuthUser string `json:"auth_user"`
 	Repo     string `json:"repo"`
 	Branch   string `json:"branch"`
-	CloneURL string `json:"clone_url"`
+	CloneURL string `json:"clone_url,omitempty"`
 }
 
 // WorkspaceInstance is the realized state — what actually exists on the pod.
