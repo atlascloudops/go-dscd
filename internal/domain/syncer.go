@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -65,13 +64,6 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 					appendEvent(inst, EventProvisionFailed, msg)
 					inst.LastError = &msg
 				}
-			}
-
-			// Check credentials — emit informational event when found
-			credPath := filepath.Join("/home", inst.Spec.Owner, ".config/dsc/credentials/git-credentials")
-			data, credErr := os.ReadFile(credPath)
-			if credErr == nil && strings.Contains(string(data), inst.Spec.VCS.Host) {
-				appendEvent(inst, EventGitCredentialsExist, inst.Spec.VCS.Host)
 			}
 
 			// Refresh head commit

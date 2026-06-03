@@ -166,6 +166,165 @@ func TestValidateSpec_MissingWorktreeName(t *testing.T) {
 	}
 }
 
+// --- Name validation tests ---
+
+func TestValidateName_ValidNames(t *testing.T) {
+	validNames := []string{
+		"tango",
+		"my-project",
+		"repo/feature-x",
+		"beta",
+		"beta/feature-vpc",
+		"ocr-service",
+		"ocr-service/experiment",
+		"my_workspace",
+		"workspace.v2",
+		"a",
+	}
+	for _, name := range validNames {
+		if err := validateName(name); err != nil {
+			t.Errorf("expected %q to be valid, got error: %v", name, err)
+		}
+	}
+}
+
+func TestValidateName_TooLong(t *testing.T) {
+	name := strings.Repeat("a", 129)
+	err := validateName(name)
+	if err == nil {
+		t.Fatal("expected error for name exceeding 128 characters")
+	}
+	pe := err.(*ProvisionError)
+	if pe.Code != ErrSpecInvalid {
+		t.Fatalf("expected SPEC_INVALID, got %s", pe.Code)
+	}
+	if !strings.Contains(pe.Message, "too long") {
+		t.Fatalf("expected 'too long' in message, got %q", pe.Message)
+	}
+}
+
+func TestValidateName_MaxLengthOk(t *testing.T) {
+	name := strings.Repeat("a", 128)
+	if err := validateName(name); err != nil {
+		t.Fatalf("expected 128-char name to be valid, got: %v", err)
+	}
+}
+
+func TestValidateName_TooManySegments(t *testing.T) {
+	err := validateName("a/b/c")
+	if err == nil {
+		t.Fatal("expected error for name with too many path segments")
+	}
+	pe := err.(*ProvisionError)
+	if pe.Code != ErrSpecInvalid {
+		t.Fatalf("expected SPEC_INVALID, got %s", pe.Code)
+	}
+	if !strings.Contains(pe.Message, "too many path segments") {
+		t.Fatalf("expected 'too many path segments' in message, got %q", pe.Message)
+	}
+}
+
+func TestValidateName_PathTraversal(t *testing.T) {
+	traversalNames := []string{
+		"..",
+		"../etc",
+		"repo/..",
+		".",
+		"repo/.",
+	}
+	for _, name := range traversalNames {
+		err := validateName(name)
+		if err == nil {
+			t.Errorf("expected error for path traversal name %q", name)
+			continue
+		}
+		pe := err.(*ProvisionError)
+		if pe.Code != ErrSpecInvalid {
+			t.Errorf("expected SPEC_INVALID for %q, got %s", name, pe.Code)
+		}
+	}
+}
+
+func TestValidateName_EmptySegment(t *testing.T) {
+	emptySegmentNames := []string{
+		"/leading",
+		"trailing/",
+		"a//b",
+	}
+	for _, name := range emptySegmentNames {
+		err := validateName(name)
+		if err == nil {
+			t.Errorf("expected error for empty segment in %q", name)
+			continue
+		}
+		pe := err.(*ProvisionError)
+		if pe.Code != ErrSpecInvalid {
+			t.Errorf("expected SPEC_INVALID for %q, got %s", name, pe.Code)
+		}
+	}
+}
+
+func TestValidateName_UnsafeCharacters(t *testing.T) {
+	unsafeNames := []string{
+		"name\x00null",
+		"name;injection",
+		"name|pipe",
+		"name&bg",
+		"name`tick`",
+		"name$var",
+		"name\"quote",
+		"name'squote",
+		"name<angle",
+		"name>angle",
+		"name:colon",
+		"name*glob",
+		"name?wildcard",
+		"name\\backslash",
+		"name!bang",
+		"name#hash",
+		"name\nnewline",
+		"name\ttab",
+	}
+	for _, name := range unsafeNames {
+		err := validateName(name)
+		if err == nil {
+			t.Errorf("expected error for unsafe character in %q", name)
+			continue
+		}
+		pe := err.(*ProvisionError)
+		if pe.Code != ErrSpecInvalid {
+			t.Errorf("expected SPEC_INVALID for %q, got %s", name, pe.Code)
+		}
+		if !strings.Contains(pe.Message, "unsafe character") {
+			t.Errorf("expected 'unsafe character' in message for %q, got %q", name, pe.Message)
+		}
+	}
+}
+
+func TestValidateName_AcceptanceCriteria(t *testing.T) {
+	// From the story acceptance criteria:
+	// "tango" passes
+	if err := validateName("tango"); err != nil {
+		t.Errorf("expected 'tango' to pass: %v", err)
+	}
+	// "my-project" passes
+	if err := validateName("my-project"); err != nil {
+		t.Errorf("expected 'my-project' to pass: %v", err)
+	}
+	// "repo/feature-x" passes (worktree notation)
+	if err := validateName("repo/feature-x"); err != nil {
+		t.Errorf("expected 'repo/feature-x' to pass: %v", err)
+	}
+	// "a/b/c" fails (too many segments)
+	if err := validateName("a/b/c"); err == nil {
+		t.Error("expected 'a/b/c' to fail")
+	}
+	// "../etc" fails (path traversal)
+	if err := validateName("../etc"); err == nil {
+		t.Error("expected '../etc' to fail")
+	}
+}
+
 func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	dir := t.TempDir()
 	repoRoot := filepath.Join(dir, "repo")
@@ -1051,117 +1210,534 @@ func TestResolveDefaultBranch_RealGit(t *testing.T) {
 	}
 }
 
-// --- Credential event emission tests ---
+// --- Template provisioning tests ---
 
-func TestCheckCredentials_EmitsEventWhenFound(t *testing.T) {
+// createTemplateRepo creates a local bare repo with template content (README + template files),
+// suitable as a template source for tests. Returns the path to the bare upstream.
+func createTemplateRepo(t *testing.T, dir string) string {
+	t.Helper()
+	upstreamBare := filepath.Join(dir, "template-upstream.git")
+	runGit(t, "", "init", "--bare", upstreamBare)
+
+	scratchClone := filepath.Join(dir, "template-scratch")
+	runGit(t, "", "clone", upstreamBare, scratchClone)
+	os.WriteFile(filepath.Join(scratchClone, "README.md"), []byte("# Template Project\n"), 0644)
+	os.WriteFile(filepath.Join(scratchClone, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
+	os.MkdirAll(filepath.Join(scratchClone, "pkg"), 0755)
+	os.WriteFile(filepath.Join(scratchClone, "pkg", "lib.go"), []byte("package pkg\n"), 0644)
+	runGit(t, scratchClone, "add", ".")
+	runGit(t, scratchClone, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "template init")
+	runGit(t, scratchClone, "push", "origin", "main")
+	return upstreamBare
+}
+
+func TestProvisionTemplate_BasicFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
 	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
 
-	// Set up credential file containing the VCS host
-	owner := currentUser()
-	credDir := filepath.Join(dir, "home", owner, ".config/dsc/credentials")
-	os.MkdirAll(credDir, 0755)
-	os.WriteFile(filepath.Join(credDir, "git-credentials"), []byte("https://oauth2:token@github.com\n"), 0644)
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
 
+	store := newMemStore()
 	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
-	inst := &WorkspaceInstance{}
+
 	spec := WorkspaceSpec{
-		Owner: owner,
-		VCS:   VCSTarget{Host: "github.com"},
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
 	}
 
-	// Override the credential path by using a custom home-relative path.
-	// Since checkCredentials uses /home/<owner>, we test via the provisioner
-	// method indirectly by writing to the expected location on a real provision.
-	// For a unit test, we directly invoke the method.
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("template provision failed: %v", err)
+	}
 
-	// checkCredentials reads from /home/<owner>/.config/dsc/credentials/git-credentials
-	// which won't match our temp dir. So we test via a full provision flow instead.
-	// Create a simpler test: verify that appendEvent with EventGitCredentialsExist
-	// does not change workspace status.
-	appendEvent(inst, EventWorktreeCreated, "main")
+	// AC: Resulting workspace has bare+worktree structure identical to standard clones
+	if !dirExists(bareRoot) {
+		t.Fatal(".bare/ directory was not created")
+	}
+	if !worktreeExists(projectRoot) {
+		t.Fatal("default/ worktree was not created")
+	}
 	if inst.Status != StatusReady {
-		t.Fatalf("expected ready before credential event, got %s", inst.Status)
+		t.Fatalf("expected ready, got %s", inst.Status)
 	}
 
-	appendEvent(inst, EventGitCredentialsExist, "github.com")
-	if inst.Status != StatusReady {
-		t.Fatalf("expected ready after credential event (informational), got %s", inst.Status)
+	// Verify .git in default/ is a file (worktree), not a directory
+	gitPath := filepath.Join(projectRoot, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		t.Fatalf("stat .git: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatal(".git in worktree should be a file, not a directory")
 	}
 
-	// Verify the credential event is in the stream
-	found := false
+	// AC: Template files are present in the worktree
+	if _, err := os.Stat(filepath.Join(projectRoot, "README.md")); err != nil {
+		t.Fatal("README.md not found in worktree")
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "main.go")); err != nil {
+		t.Fatal("main.go not found in worktree")
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "pkg", "lib.go")); err != nil {
+		t.Fatal("pkg/lib.go not found in worktree")
+	}
+
+	// AC: Initial commit message includes the template repo slug
+	commitMsg := getHeadCommitMessage(t, projectRoot)
+	if !strings.Contains(commitMsg, "org/my-template") {
+		t.Fatalf("expected commit message to contain template repo slug, got %q", commitMsg)
+	}
+
+	// AC: head commit is set
+	if inst.HeadCommit == "" {
+		t.Fatal("expected non-empty head commit")
+	}
+}
+
+func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
+	}
+
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("template provision failed: %v", err)
+	}
+
+	// AC: template remote is configured as fetch-only (push URL is "no_push")
+	templateURL := getRemoteURL(t, bareRoot, "template")
+	if templateURL != templateBare {
+		t.Fatalf("expected template remote URL %q, got %q", templateBare, templateURL)
+	}
+
+	pushURL := getRemotePushURL(t, bareRoot, "template")
+	if pushURL != "no_push" {
+		t.Fatalf("expected template push URL 'no_push', got %q", pushURL)
+	}
+}
+
+func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	originURL := "https://github.com/org/my-project.git"
+	spec := WorkspaceSpec{
+		Name:         "my-project",
+		VCS:          VCSTarget{CloneURL: originURL, Host: "github.com"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
+	}
+
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("template provision failed: %v", err)
+	}
+
+	// AC: origin remote is configured when VCS.CloneURL is non-empty
+	remoteURL := getRemoteURL(t, bareRoot, "origin")
+	if remoteURL != originURL {
+		t.Fatalf("expected origin URL %q, got %q", originURL, remoteURL)
+	}
+}
+
+func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
+	}
+
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("template provision failed: %v", err)
+	}
+
+	// AC: origin remote is NOT configured when VCS.CloneURL is empty
+	cmd := exec.Command("git", "-C", bareRoot, "remote", "get-url", "origin")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected origin remote to not exist when VCS.CloneURL is empty")
+	}
+}
+
+func TestProvisionTemplate_Events(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
+	}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("template provision failed: %v", err)
+	}
+
+	// AC: New events appear in the event stream in correct order
+	expectedEvents := []WorkspaceEvent{
+		EventTemplateCloneStarted,
+		EventTemplateCloneCompleted,
+		EventTemplateReinitCompleted,
+		EventWorktreeCreated,
+	}
+
+	if len(inst.Events) < len(expectedEvents) {
+		t.Fatalf("expected at least %d events, got %d", len(expectedEvents), len(inst.Events))
+	}
+
+	for i, expected := range expectedEvents {
+		if inst.Events[i].Event != expected {
+			t.Errorf("event[%d]: expected %s, got %s", i, expected, inst.Events[i].Event)
+		}
+	}
+
+	// Verify template_reinit_completed has the repo slug as detail
 	for _, ev := range inst.Events {
-		if ev.Event == EventGitCredentialsExist {
-			found = true
-			if ev.Detail != "github.com" {
-				t.Errorf("expected detail 'github.com', got %q", ev.Detail)
+		if ev.Event == EventTemplateReinitCompleted {
+			if ev.Detail != "org/my-template" {
+				t.Errorf("expected template_reinit_completed detail to be 'org/my-template', got %q", ev.Detail)
 			}
 		}
 	}
-	if !found {
-		t.Error("expected git_credentials_exist event in stream")
-	}
-
-	// Ensure method signature matches: checkCredentials(inst, spec)
-	// This call won't find credentials at /home/<owner> in test env,
-	// but verifies the method exists and doesn't panic.
-	p.checkCredentials(inst, spec)
 }
 
-func TestCheckCredentials_NoEventWhenMissing(t *testing.T) {
+func TestProvisionTemplate_Idempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
 	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
 	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
 
-	inst := &WorkspaceInstance{}
-	appendEvent(inst, EventWorktreeCreated, "main")
-	eventCountBefore := len(inst.Events)
+	spec := WorkspaceSpec{
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
+	}
+
+	// First provision
+	inst1, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("first provision failed: %v", err)
+	}
+	if inst1.Status != StatusReady {
+		t.Fatalf("expected ready on first provision, got %s", inst1.Status)
+	}
+
+	// Second provision (idempotent) — should return ready without error
+	inst2, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("idempotent provision failed: %v", err)
+	}
+	if inst2.Status != StatusReady {
+		t.Fatalf("expected ready on idempotent provision, got %s", inst2.Status)
+	}
+}
+
+func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	templateBare := createTemplateRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "my-project")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
 
 	spec := WorkspaceSpec{
-		Owner: currentUser(),
-		VCS:   VCSTarget{Host: "github.com"},
+		Name:         "my-project",
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		Template: &TemplateSource{
+			CloneURL: templateBare,
+			Host:     "github.com",
+			Repo:     "org/my-template",
+		},
 	}
 
-	// No credential file exists — checkCredentials should not emit an event
-	p.checkCredentials(inst, spec)
-
-	if len(inst.Events) != eventCountBefore {
-		t.Errorf("expected no new events when credentials missing, got %d new",
-			len(inst.Events)-eventCountBefore)
-	}
-}
-
-func TestCredentialEvent_DoesNotAffectStatus(t *testing.T) {
-	// Verify that git_credentials_exist after provisioning events preserves Ready
-	inst := &WorkspaceInstance{}
-	appendEvent(inst, EventCloneStarted, "url")
-	appendEvent(inst, EventCloneCompleted, "")
-	appendEvent(inst, EventWorktreeCreating, "main")
-	appendEvent(inst, EventWorktreeCreated, "main")
-
-	if inst.Status != StatusReady {
-		t.Fatalf("expected ready after provisioning events, got %s", inst.Status)
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
 	}
 
-	// Emit credential event — should remain Ready
-	appendEvent(inst, EventGitCredentialsExist, "github.com")
-	if inst.Status != StatusReady {
-		t.Fatalf("credential event changed status from ready to %s", inst.Status)
-	}
-
-	// Emit hydrate events followed by credential — should remain Ready
-	appendEvent(inst, EventHydrateStarted, "")
-	appendEvent(inst, EventHydrateCompleted, "main")
-	appendEvent(inst, EventGitCredentialsExist, "github.com")
-	if inst.Status != StatusReady {
-		t.Fatalf("credential event after hydrate changed status from ready to %s", inst.Status)
+	// AC: dscd workspace inspect returns template_repo for template-created workspaces
+	templateRepo := ResolveTemplateRepo(bareRoot, currentUser())
+	if templateRepo != templateBare {
+		t.Fatalf("expected template repo URL %q, got %q", templateBare, templateRepo)
 	}
 }
 
-func TestCredentialEvent_OnlyCredentialEvents_StatusPending(t *testing.T) {
-	// If the only events are informational (credential), status should be Pending
+func TestResolveTemplateRepo_StandardClone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+
+	repoRoot := filepath.Join(dir, "code", "myrepo")
+	bareRoot := filepath.Join(repoRoot, ".bare")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+
+	spec := WorkspaceSpec{
+		Name:         "myrepo",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     bareRoot,
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// AC: Standard clone path (no Template field) — ResolveTemplateRepo returns empty
+	templateRepo := ResolveTemplateRepo(bareRoot, currentUser())
+	if templateRepo != "" {
+		t.Fatalf("expected empty template repo for standard clone, got %q", templateRepo)
+	}
+}
+
+func TestValidateSpec_TemplateWithEmptyCloneURL(t *testing.T) {
+	spec := WorkspaceSpec{
+		Name:         "test",
+		ProjectRoot:  "/tmp/test",
+		RepoRoot:     "/tmp",
+		BareRoot:     "/tmp/.bare",
+		WorktreeName: "default",
+		Owner:        "user",
+		Template: &TemplateSource{
+			CloneURL: "",
+			Host:     "github.com",
+			Repo:     "org/tmpl",
+		},
+	}
+	err := validateSpec(spec)
+	if err == nil {
+		t.Fatal("expected error for template with empty clone_url")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != ErrSpecInvalid {
+		t.Fatalf("expected SPEC_INVALID, got %s", pe.Code)
+	}
+	if !strings.Contains(pe.Message, "template.clone_url") {
+		t.Fatalf("expected message to mention template.clone_url, got %q", pe.Message)
+	}
+}
+
+func TestValidateSpec_TemplateWithoutVCSCloneURL(t *testing.T) {
+	// AC: Spec validation accepts empty VCS.CloneURL when Template is present
+	spec := WorkspaceSpec{
+		Name:         "test",
+		ProjectRoot:  "/tmp/test",
+		RepoRoot:     "/tmp",
+		BareRoot:     "/tmp/.bare",
+		WorktreeName: "default",
+		Owner:        "user",
+		Template: &TemplateSource{
+			CloneURL: "https://github.com/org/tmpl.git",
+			Host:     "github.com",
+			Repo:     "org/tmpl",
+		},
+	}
+	if err := validateSpec(spec); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTemplateEvents_DoNotAffectStatus(t *testing.T) {
+	// AC: Template events are informational and do not change workspace status
 	inst := &WorkspaceInstance{}
-	appendEvent(inst, EventGitCredentialsExist, "github.com")
+	appendEvent(inst, EventTemplateCloneStarted, "url")
 	if inst.Status != StatusPending {
-		t.Fatalf("expected pending when only credential events present, got %s", inst.Status)
+		t.Fatalf("expected pending after template_clone_started, got %s", inst.Status)
 	}
+
+	appendEvent(inst, EventTemplateCloneCompleted, "")
+	if inst.Status != StatusPending {
+		t.Fatalf("expected pending after template_clone_completed, got %s", inst.Status)
+	}
+
+	appendEvent(inst, EventTemplateReinitCompleted, "org/tmpl")
+	if inst.Status != StatusPending {
+		t.Fatalf("expected pending after template_reinit_completed, got %s", inst.Status)
+	}
+
+	// Once worktree_created fires, status becomes Ready
+	appendEvent(inst, EventWorktreeCreated, "main")
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready after worktree_created, got %s", inst.Status)
+	}
+}
+
+// --- Test helpers for template tests ---
+
+func getHeadCommitMessage(t *testing.T, projectRoot string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", projectRoot, "log", "-1", "--format=%s")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git log failed: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func getRemoteURL(t *testing.T, bareRoot, remoteName string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", bareRoot, "remote", "get-url", remoteName)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git remote get-url %s failed: %v", remoteName, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func getRemotePushURL(t *testing.T, bareRoot, remoteName string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", bareRoot, "remote", "get-url", "--push", remoteName)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git remote get-url --push %s failed: %v", remoteName, err)
+	}
+	return strings.TrimSpace(string(out))
 }

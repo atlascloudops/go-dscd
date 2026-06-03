@@ -13,8 +13,10 @@ const (
 	EventProvisionFailed  WorkspaceEvent = "provision_failed"
 	EventCloneDetected    WorkspaceEvent = "clone_detected"
 
-	// Informational workspace events — these do NOT affect workspace lifecycle status.
-	EventGitCredentialsExist WorkspaceEvent = "git_credentials_exist"
+	// Template provisioning events — informational; do NOT affect workspace lifecycle status.
+	EventTemplateCloneStarted   WorkspaceEvent = "template_clone_started"
+	EventTemplateCloneCompleted WorkspaceEvent = "template_clone_completed"
+	EventTemplateReinitCompleted WorkspaceEvent = "template_reinit_completed"
 
 	// Hydrate events — informational only; these do NOT affect workspace lifecycle status.
 	EventHydrateStarted   WorkspaceEvent = "hydrate_started"
@@ -66,8 +68,8 @@ type StatusResolver[T any] interface {
 }
 
 // WorkspaceStatusResolver resolves workspace lifecycle status from workspace events.
-// Informational events (hydrate, git_credentials_exist) are skipped — workspace
-// status is determined solely by provisioning milestone events.
+// Informational events (hydrate, template) are skipped — workspace status is
+// determined solely by provisioning milestone events.
 type WorkspaceStatusResolver struct{}
 
 // Resolve projects an ordered workspace event slice into a Status.
@@ -80,7 +82,7 @@ func (WorkspaceStatusResolver) Resolve(events []WorkspaceEventRecord) Status {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Event {
 		case EventHydrateStarted, EventHydrateCompleted, EventHydrateSkipped,
-			EventGitCredentialsExist:
+			EventTemplateCloneStarted, EventTemplateCloneCompleted, EventTemplateReinitCompleted:
 			// Informational — skip
 			continue
 		case EventProvisionFailed:

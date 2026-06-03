@@ -121,7 +121,6 @@ func TestWorkspaceStatusResolver_MixedInfoEvents(t *testing.T) {
 		{Event: EventWorktreeCreated, Timestamp: time.Now()},
 		{Event: EventHydrateStarted, Timestamp: time.Now()},
 		{Event: EventHydrateCompleted, Timestamp: time.Now()},
-		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
 		{Event: EventHydrateSkipped, Timestamp: time.Now()},
 	}
 	got := r.Resolve(events)
@@ -130,28 +129,6 @@ func TestWorkspaceStatusResolver_MixedInfoEvents(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStatusResolver_GitCredentialsExistIsInformational(t *testing.T) {
-	var r WorkspaceStatusResolver
-
-	// git_credentials_exist after Ready — status stays Ready
-	events := []WorkspaceEventRecord{
-		{Event: EventWorktreeCreated, Timestamp: time.Now()},
-		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
-	}
-	got := r.Resolve(events)
-	if got != StatusReady {
-		t.Errorf("expected %q after git_credentials_exist, got %q", StatusReady, got)
-	}
-
-	// Only git_credentials_exist — status is Pending
-	events2 := []WorkspaceEventRecord{
-		{Event: EventGitCredentialsExist, Timestamp: time.Now()},
-	}
-	got2 := r.Resolve(events2)
-	if got2 != StatusPending {
-		t.Errorf("expected %q for only git_credentials_exist, got %q", StatusPending, got2)
-	}
-}
 
 func TestWorkspaceStatusResolver_CloneDetected(t *testing.T) {
 	var r WorkspaceStatusResolver

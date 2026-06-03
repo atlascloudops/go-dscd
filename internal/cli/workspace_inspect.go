@@ -42,20 +42,12 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				WorktreeCount:    len(worktrees),
 				Worktrees:        worktrees,
 				IDEInfo:          domain.IDEInfoFromInstance(inst.IDE),
+				TemplateRepo:     domain.ResolveTemplateRepo(inst.Spec.BareRoot, inst.Spec.Owner),
 			}
 
 			if jsonOutput {
 				resp := domain.OkResponse("workspace.inspect", inspectData)
 				return outputResponse(resp, 0)
-			}
-
-			// Derive credential status from the most recent git_credentials_exist event
-			credStatus := "stale"
-			for i := len(inst.Events) - 1; i >= 0; i-- {
-				if inst.Events[i].Event == domain.EventGitCredentialsExist {
-					credStatus = "fresh"
-					break
-				}
 			}
 
 			fmt.Fprintf(os.Stdout, "Name:            %s\n", inst.Spec.Name)
@@ -66,7 +58,9 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", inspectData.BareRoot)
 			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", inst.Status)
 			fmt.Fprintf(os.Stdout, "Head Commit:     %s\n", inst.HeadCommit)
-			fmt.Fprintf(os.Stdout, "Credential:      %s (%s)\n", inst.CredentialHost, credStatus)
+			if inspectData.TemplateRepo != "" {
+				fmt.Fprintf(os.Stdout, "Template:        %s\n", inspectData.TemplateRepo)
+			}
 			fmt.Fprintf(os.Stdout, "Worktree Count:  %d\n", inspectData.WorktreeCount)
 			if len(inspectData.Worktrees) > 0 {
 				fmt.Fprintf(os.Stdout, "Worktrees:       %s\n", strings.Join(inspectData.Worktrees, ", "))

@@ -839,56 +839,6 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	}
 }
 
-func TestCredentialCheckEmitsGitCredentialsExistEvent(t *testing.T) {
-	// This test validates that git_credentials_exist events appear in the
-	// workspace event stream (inst.Events), not in the IDE event stream.
-	// The checkCredentials function reads from a fixed path under /home/<owner>/,
-	// so we set up the credential file there.
-	owner := currentUser()
-	credDir := filepath.Join("/home", owner, ".config/dsc/credentials")
-	if err := os.MkdirAll(credDir, 0755); err != nil {
-		t.Skipf("cannot create credential dir at %s (CI without /home): %v", credDir, err)
-	}
-	credFile := filepath.Join(credDir, "git-credentials")
-	if err := os.WriteFile(credFile, []byte("https://x-access-token:tok@github.com\n"), 0644); err != nil {
-		t.Skipf("cannot write credential file: %v", err)
-	}
-	defer os.Remove(credFile)
-
-	dir := t.TempDir()
-	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        owner,
-	}
-
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
-
-	inst, err := p.Provision(store, spec)
-	if err != nil {
-		t.Fatalf("provision failed: %v", err)
-	}
-
-	// Check for git_credentials_exist event in workspace event stream
-	hasCredEvent := false
-	for _, ev := range inst.Events {
-		if ev.Event == EventGitCredentialsExist {
-			hasCredEvent = true
-		}
-	}
-	if !hasCredEvent {
-		t.Error("expected git_credentials_exist event in workspace event stream")
-	}
-}
 
 func TestIDESpecConfig_JSONRoundTrip(t *testing.T) {
 	spec := WorkspaceSpec{

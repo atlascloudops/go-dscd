@@ -56,12 +56,14 @@ func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
 
 // WorkspaceInspectData extends WorkspaceInstance with worktree diagnostics for inspect responses.
 // The IDEInfo field provides a clean adapter/port/status view when IDE state exists.
+// TemplateRepo is derived from the "template" git remote and omitted for standard clones.
 type WorkspaceInspectData struct {
 	WorkspaceInstance
 	BareRoot      string   `json:"bare_root"`
 	WorktreeCount int      `json:"worktree_count"`
 	Worktrees     []string `json:"worktrees"`
 	IDEInfo       *IDEInfo `json:"ide_info,omitempty"`
+	TemplateRepo  string   `json:"template_repo,omitempty"`
 }
 
 // WorkspaceListItem is the per-workspace entry in a list response. It includes
