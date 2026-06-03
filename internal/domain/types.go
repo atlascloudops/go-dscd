@@ -4,9 +4,10 @@ import "time"
 
 // WorkspaceSpec is the input definition — what the client asks for.
 type WorkspaceSpec struct {
-	Name         string    `json:"name"`          // logical name: "infra" or "infra/feature-vpc"
-	VCS          VCSTarget `json:"vcs"`
-	PatName      string    `json:"pat_name"`
+	Name          string    `json:"name"`           // user-facing alias: "infra" or custom name
+	CanonicalName string    `json:"canonical_name"` // VCS-derived identity: "infra" or "infra/feat"
+	VCS           VCSTarget `json:"vcs"`
+	PatName       string    `json:"pat_name"`
 	ProjectRoot  string    `json:"project_root"`  // final worktree path
 	RepoRoot     string    `json:"repo_root"`     // container dir (holds .bare/ and worktrees)
 	BareRoot     string    `json:"bare_root"`     // path to .bare/
