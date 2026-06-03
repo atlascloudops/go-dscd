@@ -46,7 +46,6 @@ type WorkspaceInstance struct {
 	Status          Status                 `json:"status,omitempty"`
 	IDE             *IDEInstance            `json:"ide,omitempty"`
 	HeadCommit      string                 `json:"head_commit,omitempty"`
-	CredentialHost  string                 `json:"credential_host"`
 	ProvisionedAt   *time.Time             `json:"provisioned_at,omitempty"`
 	LastError       *string                `json:"last_error,omitempty"`
 	LastSyncedAt    *time.Time             `json:"last_synced_at,omitempty"`

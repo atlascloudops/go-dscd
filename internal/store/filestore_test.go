@@ -32,7 +32,6 @@ func TestRoundTrip(t *testing.T) {
 				Owner:       "user",
 			},
 			Status:      domain.StatusReady,
-			CredentialHost: "github.com",
 			ProvisionedAt:  &now,
 			LastError:      nil,
 		},
@@ -50,7 +49,6 @@ func TestRoundTrip(t *testing.T) {
 				Owner:       "user",
 			},
 			Status:      domain.StatusFailed,
-			CredentialHost: "gitlab.com",
 			ProvisionedAt:  &now,
 			LastError:      &errMsg,
 		},
@@ -110,7 +108,6 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 				IDE:          &domain.IDESpecConfig{Adapter: "openvscode-server"},
 			},
 			Status:         domain.StatusReady,
-			CredentialHost: "github.com",
 			IDE: &domain.IDEInstance{
 				Adapter: "openvscode-server",
 				Port:    9100,

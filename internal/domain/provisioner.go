@@ -64,12 +64,10 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 		} else {
 			inst = &WorkspaceInstance{
 				Spec:          spec,
-				CredentialHost: spec.VCS.Host,
-				ProvisionedAt:  &now,
+						ProvisionedAt:  &now,
 			}
 			appendEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
-		p.checkCredentials(inst, spec)
 		// Hydrate before resolving head commit so it reflects the latest state
 		if dirExists(spec.BareRoot) {
 			p.hydrate(inst, spec)
@@ -101,7 +99,6 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 
 	inst := &WorkspaceInstance{
 		Spec:           spec,
-		CredentialHost: spec.VCS.Host,
 		ProvisionedAt:  &now,
 	}
 	appendEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
@@ -153,7 +150,6 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 
 	p.writeLog(spec.Name, "provision", "Bare clone + default worktree complete")
 
-	p.checkCredentials(inst, spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
@@ -183,7 +179,6 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 
 	inst := &WorkspaceInstance{
 		Spec:           spec,
-		CredentialHost: tmpl.Host,
 		ProvisionedAt:  &now,
 	}
 
@@ -304,7 +299,6 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 
 	p.writeLog(spec.Name, "provision", "Template provisioning complete")
 
-	p.checkCredentials(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
 
@@ -468,7 +462,6 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	inst := &WorkspaceInstance{
 		Spec:           spec,
-		CredentialHost: spec.VCS.Host,
 		ProvisionedAt:  &now,
 	}
 
@@ -524,7 +517,6 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	p.writeLog(spec.Name, "provision", "Worktree add complete")
 
-	p.checkCredentials(inst, spec)
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
@@ -1183,20 +1175,6 @@ func (p *Provisioner) persistState(store StateStore, name string, inst *Workspac
 		instances[name] = inst
 		return store.Save(instances)
 	})
-}
-
-// checkCredentials emits EventGitCredentialsExist when the credential file
-// contains the VCS host. The event is informational — it does not affect
-// workspace status projection.
-func (p *Provisioner) checkCredentials(inst *WorkspaceInstance, spec WorkspaceSpec) {
-	credPath := filepath.Join("/home", spec.Owner, ".config/dsc/credentials/git-credentials")
-	data, err := os.ReadFile(credPath)
-	if err != nil {
-		return
-	}
-	if strings.Contains(string(data), spec.VCS.Host) {
-		appendEvent(inst, EventGitCredentialsExist, spec.VCS.Host)
-	}
 }
 
 func (p *Provisioner) writeLog(name, phase, format string, args ...interface{}) {
