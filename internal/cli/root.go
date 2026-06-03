@@ -66,7 +66,19 @@ func NewRootCommand(version string) *cobra.Command {
 		newWorkspaceLogsCmd(fs, logDir),
 	)
 
-	root.AddCommand(workspace, newStatusCmd(fs, version, &statePath))
+	credentials := &cobra.Command{
+		Use:   "credentials",
+		Short: "Manage git credentials",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	credentials.AddCommand(
+		newCredentialsListCmd(),
+		newCredentialsWriteCmd(),
+	)
+
+	root.AddCommand(workspace, credentials, newStatusCmd(fs, version, &statePath))
 	return root
 }
 
