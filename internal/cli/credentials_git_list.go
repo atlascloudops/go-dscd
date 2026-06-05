@@ -9,25 +9,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCredentialsListCmd() *cobra.Command {
+func newCredentialsGitListCmd() *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List credential fingerprints by host",
+		Short: "List git credential fingerprints by host",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if owner == "" {
-				resp := domain.ErrorResponse("credentials.list", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.list", domain.ErrorInfo{
 					Code:    domain.ErrSpecInvalid,
 					Message: "--owner is required",
 				})
 				return outputResponse(resp, 1)
 			}
 
-			path := domain.CredentialFilePath(owner)
-			fingerprints, err := domain.ParseCredentialFile(path)
+			path := domain.GitCredentialFilePath(owner)
+			fingerprints, err := domain.ParseGitCredentialFile(path)
 			if err != nil {
-				resp := domain.ErrorResponse("credentials.list", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.list", domain.ErrorInfo{
 					Code:    domain.ErrStateCorrupt,
 					Message: err.Error(),
 				})
@@ -35,12 +35,12 @@ func newCredentialsListCmd() *cobra.Command {
 			}
 
 			if jsonOutput {
-				resp := domain.OkResponse("credentials.list", fingerprints)
+				resp := domain.OkResponse("credentials.git.list", fingerprints)
 				return outputResponse(resp, 0)
 			}
 
 			if len(fingerprints) == 0 {
-				fmt.Println("No credentials found.")
+				fmt.Println("No git credentials found.")
 				return nil
 			}
 

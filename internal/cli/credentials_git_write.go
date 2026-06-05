@@ -11,22 +11,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// CredentialsWriteResult holds the outcome of a credentials write operation.
-type CredentialsWriteResult struct {
+// GitCredentialsWriteResult holds the outcome of a git credentials write operation.
+type GitCredentialsWriteResult struct {
 	Updated []string `json:"updated"`
 	Added   []string `json:"added"`
 }
 
-func newCredentialsWriteCmd() *cobra.Command {
+func newCredentialsGitWriteCmd() *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
 		Use:   "write",
-		Short: "Write credentials from stdin",
-		Long:  "Reads credential lines from stdin (one per line, format: https://{auth_user}:{token}@{host}) and upserts them into the credential file.",
+		Short: "Write git credentials from stdin",
+		Long:  "Reads credential lines from stdin (one per line, format: https://{auth_user}:{token}@{host}) and upserts them into the git credential file.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if owner == "" {
-				resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 					Code:    domain.ErrSpecInvalid,
 					Message: "--owner is required",
 				})
@@ -34,7 +34,7 @@ func newCredentialsWriteCmd() *cobra.Command {
 			}
 
 			// Read credential lines from stdin
-			var entries []domain.CredentialEntry
+			var entries []domain.GitCredentialEntry
 			scanner := bufio.NewScanner(os.Stdin)
 			for scanner.Scan() {
 				line := strings.TrimSpace(scanner.Text())
@@ -43,7 +43,7 @@ func newCredentialsWriteCmd() *cobra.Command {
 				}
 				// Parse the line using the same format as git-credentials
 				if !strings.HasPrefix(line, "https://") {
-					resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+					resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 						Code:    domain.ErrSpecInvalid,
 						Message: fmt.Sprintf("invalid credential line (must start with https://): %s", line),
 					})
@@ -52,7 +52,7 @@ func newCredentialsWriteCmd() *cobra.Command {
 				rest := strings.TrimPrefix(line, "https://")
 				atIdx := strings.LastIndex(rest, "@")
 				if atIdx < 0 {
-					resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+					resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 						Code:    domain.ErrSpecInvalid,
 						Message: fmt.Sprintf("invalid credential line (missing @host): %s", line),
 					})
@@ -62,7 +62,7 @@ func newCredentialsWriteCmd() *cobra.Command {
 				host := rest[atIdx+1:]
 				colonIdx := strings.Index(userinfo, ":")
 				if colonIdx < 0 || host == "" {
-					resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+					resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 						Code:    domain.ErrSpecInvalid,
 						Message: fmt.Sprintf("invalid credential line: %s", line),
 					})
@@ -71,20 +71,20 @@ func newCredentialsWriteCmd() *cobra.Command {
 				authUser := userinfo[:colonIdx]
 				token := userinfo[colonIdx+1:]
 				if authUser == "" || token == "" {
-					resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+					resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 						Code:    domain.ErrSpecInvalid,
 						Message: fmt.Sprintf("invalid credential line (empty user or token): %s", line),
 					})
 					return outputResponse(resp, 1)
 				}
-				entries = append(entries, domain.CredentialEntry{
+				entries = append(entries, domain.GitCredentialEntry{
 					Host:     host,
 					AuthUser: authUser,
 					Token:    token,
 				})
 			}
 			if err := scanner.Err(); err != nil {
-				resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 					Code:    domain.ErrStateCorrupt,
 					Message: fmt.Sprintf("reading stdin: %s", err.Error()),
 				})
@@ -92,17 +92,17 @@ func newCredentialsWriteCmd() *cobra.Command {
 			}
 
 			if len(entries) == 0 {
-				resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 					Code:    domain.ErrSpecInvalid,
 					Message: "no credential lines provided on stdin",
 				})
 				return outputResponse(resp, 1)
 			}
 
-			path := domain.CredentialFilePath(owner)
-			updated, added, err := domain.UpsertCredentials(path, entries)
+			path := domain.GitCredentialFilePath(owner)
+			updated, added, err := domain.UpsertGitCredentials(path, entries)
 			if err != nil {
-				resp := domain.ErrorResponse("credentials.write", domain.ErrorInfo{
+				resp := domain.ErrorResponse("credentials.git.write", domain.ErrorInfo{
 					Code:    domain.ErrStateCorrupt,
 					Message: err.Error(),
 				})
@@ -110,9 +110,9 @@ func newCredentialsWriteCmd() *cobra.Command {
 			}
 
 			// Best-effort chown to the target user
-			chownCredentialFile(path, owner)
+			chownGitCredentialFile(path, owner)
 
-			result := CredentialsWriteResult{
+			result := GitCredentialsWriteResult{
 				Updated: updated,
 				Added:   added,
 			}
@@ -125,7 +125,7 @@ func newCredentialsWriteCmd() *cobra.Command {
 			}
 
 			if jsonOutput {
-				resp := domain.OkResponse("credentials.write", result)
+				resp := domain.OkResponse("credentials.git.write", result)
 				return outputResponse(resp, 0)
 			}
 
@@ -143,9 +143,9 @@ func newCredentialsWriteCmd() *cobra.Command {
 	return cmd
 }
 
-// chownCredentialFile sets ownership of the credential file to the given user.
-// This is best-effort — it silently ignores errors (e.g. when not running as root).
-func chownCredentialFile(path, owner string) {
+// chownGitCredentialFile sets ownership of the git credential file to the given user.
+// This is best-effort -- it silently ignores errors (e.g. when not running as root).
+func chownGitCredentialFile(path, owner string) {
 	// Use chown command for simplicity; avoids user lookup dependency
 	_ = exec.Command("chown", owner+":"+owner, path).Run()
 }
