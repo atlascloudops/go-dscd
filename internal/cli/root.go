@@ -84,7 +84,18 @@ func NewRootCommand(version string) *cobra.Command {
 		newCredentialsGitListCmd(),
 		newCredentialsGitWriteCmd(),
 	)
-	credentials.AddCommand(gitCreds)
+	ssoCreds := &cobra.Command{
+		Use:   "sso",
+		Short: "Manage SSO credentials",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	ssoCreds.AddCommand(
+		newCredentialsSsoStatusCmd(),
+		newCredentialsSsoWriteCmd(),
+	)
+	credentials.AddCommand(gitCreds, ssoCreds)
 
 	root.AddCommand(workspace, credentials, newStatusCmd(fs, version, &statePath))
 	return root
