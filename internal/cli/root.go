@@ -97,7 +97,16 @@ func NewRootCommand(version string) *cobra.Command {
 	)
 	credentials.AddCommand(gitCreds, ssoCreds)
 
-	root.AddCommand(workspace, credentials, newStatusCmd(fs, version, &statePath))
+	shell := &cobra.Command{
+		Use:   "shell",
+		Short: "Manage shell environment hooks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	shell.AddCommand(newShellInstallCmd())
+
+	root.AddCommand(workspace, credentials, shell, newStatusCmd(fs, version, &statePath))
 	return root
 }
 
