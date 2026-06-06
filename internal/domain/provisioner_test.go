@@ -347,7 +347,7 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "test",
@@ -388,7 +388,7 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	os.WriteFile(filepath.Join(projectRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "test/feature",
@@ -479,7 +479,7 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -545,7 +545,7 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Step 1: Provision default (bare clone + default worktree)
 	defaultSpec := WorkspaceSpec{
@@ -623,7 +623,7 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// AC: Non-default worktree requested before bare clone exists -> bare clone is created automatically
 	spec := WorkspaceSpec{
@@ -674,7 +674,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	experimentRoot := filepath.Join(repoRoot, ".worktrees", "experiment")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// --- Step 3: Provision first workspace (bare clone + default worktree) ---
 	defaultSpec := WorkspaceSpec{
@@ -941,7 +941,7 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1016,7 +1016,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1075,7 +1075,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1137,7 +1137,7 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default
 	defaultSpec := WorkspaceSpec{
@@ -1256,7 +1256,7 @@ func TestProvisionTemplate_BasicFlow(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1335,7 +1335,7 @@ func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1382,7 +1382,7 @@ func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	originURL := "https://github.com/org/my-project.git"
 	spec := WorkspaceSpec{
@@ -1426,7 +1426,7 @@ func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1468,7 +1468,7 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1531,7 +1531,7 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1580,7 +1580,7 @@ func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1622,7 +1622,7 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1735,7 +1735,6 @@ func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
 
 	store := newMemStore()
 	p := &Provisioner{
-		LogDir:      filepath.Join(dir, "logs"),
 		ActivityLog: actLog,
 	}
 
@@ -1799,7 +1798,6 @@ func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
 	portFile := filepath.Join(dir, "ports.json")
 	store := newMemStore()
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
 		ActivityLog:   actLog,
 		IDEAdapter:    &stubIDEAdapter{},
 		PortAllocator: NewPortAllocator(portFile),
@@ -1847,7 +1845,7 @@ func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
 
 	store := newMemStore()
 	p := &Provisioner{
-		LogDir: filepath.Join(dir, "logs"),
+		
 		// ActivityLog intentionally nil
 	}
 
@@ -1884,7 +1882,6 @@ func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
 
 	store := newMemStore()
 	p := &Provisioner{
-		LogDir:      filepath.Join(dir, "logs"),
 		ActivityLog: actLog,
 	}
 

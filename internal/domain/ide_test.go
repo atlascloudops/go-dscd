@@ -510,7 +510,7 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -599,7 +599,7 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -652,7 +652,7 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 		// IDE is nil — no IDE requested
 	}
 
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	inst, err := p.Provision(store, spec)
 	if err != nil {
@@ -689,7 +689,7 @@ func TestProvision_InvalidAdapterName(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: NewPortAllocator(filepath.Join(dir, "ports.json")),
 	}
@@ -825,7 +825,7 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -887,7 +887,7 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -953,7 +953,7 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}

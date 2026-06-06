@@ -8,7 +8,7 @@ Available on all commands:
 |------|------|---------|-------------|
 | `--json` | bool | `false` | Output structured JSON envelope |
 | `--state-path` | string | `/opt/dsc/var/dscd/state.json` | Path to state file |
-| `--log-dir` | string | `/opt/dsc/var/dscd/logs` | Path to log directory |
+| `--log-level` | string | `info` | Log level (debug, info, warn, error) |
 
 ## Response Envelope (all commands, `--json` mode)
 

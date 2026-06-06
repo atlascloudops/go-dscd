@@ -171,7 +171,7 @@ func TestListWorktrees_RealGit(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default (bare clone + default worktree)
 	defaultSpec := WorkspaceSpec{

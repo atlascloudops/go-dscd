@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string, activityLog *domain.ActivityLog) *cobra.Command {
+func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	var force bool
 	var all bool
 
@@ -19,7 +19,6 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string, activity
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			provisioner := &domain.Provisioner{
-				LogDir:        logDir,
 				IDEAdapter:    domain.NewCodeServerAdapter(),
 				PortAllocator: domain.NewPortAllocator(defaultPortFile),
 				ActivityLog:   activityLog,

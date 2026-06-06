@@ -75,7 +75,7 @@ func TestPrune_AllClean(t *testing.T) {
 	spikeBRoot := filepath.Join(repoRoot, ".worktrees", "spike-b")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + two branch worktrees
 	defaultSpec := WorkspaceSpec{
@@ -185,7 +185,7 @@ func TestPrune_MixedCleanDirty(t *testing.T) {
 	spikeBRoot := filepath.Join(repoRoot, ".worktrees", "spike-b")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + two branch worktrees
 	defaultSpec := WorkspaceSpec{
@@ -284,7 +284,7 @@ func TestPrune_AllDirty(t *testing.T) {
 	spikeBRoot := filepath.Join(repoRoot, ".worktrees", "spike-b")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	defaultSpec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -368,7 +368,7 @@ func TestPrune_OnlyDefault(t *testing.T) {
 	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	defaultSpec := WorkspaceSpec{
 		Name:         "myrepo",

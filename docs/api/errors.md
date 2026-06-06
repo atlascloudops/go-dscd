@@ -63,8 +63,5 @@ Exit code is always `1` for errors.
 - State file locking uses POSIX `flock` with `LOCK_EX` (exclusive).
 - Lock blocks indefinitely (no timeout). If the lock cannot be acquired due to a system error, `LOCK_FAILED` is returned.
 
-### Missing log file
-- `workspace logs` prints an informational message (`No log file for workspace 'X' (not yet provisioned)`) rather than returning an error.
-
 ### Missing credential file
 - Detected as `CredentialFresh: false` during enrichment. Not treated as fatal — the `status` field still derives from clone existence.

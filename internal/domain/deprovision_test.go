@@ -91,7 +91,7 @@ func TestDeprovision_CleanWorktree(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default
 	defaultSpec := WorkspaceSpec{
@@ -166,7 +166,7 @@ func TestDeprovision_DirtyWorktree(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + feature
 	defaultSpec := WorkspaceSpec{
@@ -236,7 +236,7 @@ func TestDeprovision_ForceDeleteDirty(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + feature
 	defaultSpec := WorkspaceSpec{
@@ -296,7 +296,7 @@ func TestDeprovisionAll_FullRemoval(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + feature
 	defaultSpec := WorkspaceSpec{
@@ -367,7 +367,7 @@ func TestDeprovisionAll_DirtyGuard(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default + feature
 	defaultSpec := WorkspaceSpec{
@@ -429,7 +429,7 @@ func TestIsWorktreeDirty_Clean(t *testing.T) {
 	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "repo",
@@ -468,7 +468,7 @@ func TestIsWorktreeDirty_Dirty(t *testing.T) {
 	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "repo",

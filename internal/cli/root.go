@@ -10,7 +10,6 @@ import (
 
 const (
 	defaultStatePath   = "/opt/dsc/var/dscd/state.json"
-	defaultLogDir      = "/opt/dsc/var/dscd/logs"
 	defaultPortFile    = "/opt/dsc/var/dscd/ports.json"
 	defaultActivityLog = domain.DefaultActivityLogPath
 )
@@ -19,8 +18,8 @@ var jsonOutput bool
 
 func NewRootCommand(version string) *cobra.Command {
 	var statePath string
-	var logDir string
 	var activityLogPath string
+	var logLevel string
 
 	root := &cobra.Command{
 		Use:   "dscd",
@@ -33,8 +32,8 @@ func NewRootCommand(version string) *cobra.Command {
 
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	root.PersistentFlags().StringVar(&statePath, "state-path", defaultStatePath, "path to state file")
-	root.PersistentFlags().StringVar(&logDir, "log-dir", defaultLogDir, "path to log directory")
 	root.PersistentFlags().StringVar(&activityLogPath, "activity-log", defaultActivityLog, "path to activity log file")
+	root.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
 	root.Version = version
 	root.SetVersionTemplate(fmt.Sprintf("dscd v%s\n", version))
@@ -65,13 +64,12 @@ func NewRootCommand(version string) *cobra.Command {
 	fs := &lazyStore{factory: storeFactory}
 
 	workspace.AddCommand(
-		newWorkspaceProvisionCmd(fs, logDir, al.get()),
-		newWorkspaceDeprovisionCmd(fs, logDir, al.get()),
-		newWorkspacePruneCmd(fs, logDir, al.get()),
+		newWorkspaceProvisionCmd(fs, al.get()),
+		newWorkspaceDeprovisionCmd(fs, al.get()),
+		newWorkspacePruneCmd(fs, al.get()),
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
 		newWorkspaceSyncCmd(fs, al.get()),
-		newWorkspaceLogsCmd(fs, logDir),
 	)
 
 	credentials := &cobra.Command{

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,6 @@ import (
 
 type Provisioner struct {
 	StorePath     string         // path to state.json
-	LogDir        string         // /opt/dsc/var/dscd/logs/
 	IDEAdapter    IDEAdapter     // optional; nil skips IDE phase
 	PortAllocator *PortAllocator // optional; nil skips IDE phase
 	ActivityLog   *ActivityLog   // optional; nil skips activity log writes
@@ -141,7 +141,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	// 3. Resolve default branch
 	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
 	if err != nil {
-		p.writeLog(spec.Name, "provision", "Could not resolve default branch, falling back to main: %v", err)
+		slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
 		defaultBranch = "main"
 	}
 
@@ -585,12 +585,12 @@ func (p *Provisioner) stopIDE(inst *Workspace, spec WorkspaceSpec) {
 	}
 
 	if err := p.IDEAdapter.Stop(ctx); err != nil {
-		p.writeLog(spec.Name, "ide", "Stop failed: %v", err)
+		slog.Error("ide stop failed", "workspace", spec.Name, "error", err)
 	}
 
 	key := PortKey(spec.Owner, spec.WorktreeName)
 	if err := p.PortAllocator.Release(key); err != nil {
-		p.writeLog(spec.Name, "ide", "Port release failed: %v", err)
+		slog.Error("port release failed", "workspace", spec.Name, "error", err)
 	}
 
 	p.recordIDEEvent(inst.IDE, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
@@ -782,7 +782,7 @@ func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*D
 		return nil, fmt.Errorf("remove state entry: %w", err)
 	}
 
-	p.writeLog(name, "deprovision", "Worktree removed")
+	slog.Info("worktree removed", "workspace", name, "phase", "deprovision")
 
 	suffix := ""
 	if force {
@@ -887,7 +887,7 @@ func (p *Provisioner) DeprovisionAll(store StateStore, repoName string, force bo
 		wtNames = append(wtNames, inst.Spec.WorktreeName)
 	}
 
-	p.writeLog(repoName, "deprovision", "Full removal: worktrees=%v, bare=%s", wtNames, bareRoot)
+	slog.Info("full workspace removal", "workspace", repoName, "phase", "deprovision", "worktrees", wtNames, "bare_root", bareRoot)
 
 	return &DeprovisionResult{
 		Removed: matchingNames,
@@ -965,7 +965,7 @@ func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, er
 
 		result.Pruned = append(result.Pruned, name)
 		namesToRemove = append(namesToRemove, name)
-		p.writeLog(name, "prune", "Worktree removed")
+		slog.Info("worktree pruned", "workspace", name, "phase", "prune")
 	}
 
 	// 4. Run git worktree prune on bare root
@@ -1161,22 +1161,6 @@ func (p *Provisioner) persistState(store StateStore, name string, inst *Workspac
 		instances[name] = inst
 		return store.Save(instances)
 	})
-}
-
-func (p *Provisioner) writeLog(name, phase, format string, args ...interface{}) {
-	if p.LogDir == "" {
-		return
-	}
-	os.MkdirAll(p.LogDir, 0755)
-	logPath := filepath.Join(p.LogDir, name+".log")
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	msg := fmt.Sprintf(format, args...)
-	ts := time.Now().UTC().Format(time.RFC3339)
-	fmt.Fprintf(f, "[%s] [%s] %s\n", ts, phase, msg)
 }
 
 func validateSpec(spec WorkspaceSpec) error {
