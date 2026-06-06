@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/atlascloudops/go-dscd/internal/domain"
 	"github.com/spf13/cobra"
@@ -17,7 +18,7 @@ type GitCredentialsWriteResult struct {
 	Added   []string `json:"added"`
 }
 
-func newCredentialsGitWriteCmd() *cobra.Command {
+func newCredentialsGitWriteCmd(store domain.StateStore) *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
@@ -112,6 +113,9 @@ func newCredentialsGitWriteCmd() *cobra.Command {
 			// Best-effort chown to the target user
 			chownGitCredentialFile(path, owner)
 
+			// Record credential event in state
+			recordGitCredentialEvent(store, owner, updated, added, entries)
+
 			result := GitCredentialsWriteResult{
 				Updated: updated,
 				Added:   added,
@@ -141,6 +145,47 @@ func newCredentialsGitWriteCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&owner, "owner", "", "username that owns the credential file")
 	return cmd
+}
+
+// recordGitCredentialEvent records a git credential event in the daemon state.
+// This is best-effort — errors are logged but do not fail the write operation.
+func recordGitCredentialEvent(s domain.StateStore, owner string, updated, added []string, entries []domain.GitCredentialEntry) {
+	_ = s.WithLock(func() error {
+		state, err := s.LoadState()
+		if err != nil {
+			return err
+		}
+
+		cs := state.Credentials[owner]
+		if cs == nil {
+			cs = &domain.CredentialState{Owner: owner}
+			state.Credentials[owner] = cs
+		}
+
+		// Determine event type: rotated if all hosts were updated, written if any were added
+		var event domain.CredentialEvent
+		if len(added) == 0 && len(updated) > 0 {
+			event = domain.CredEventGitRotated
+		} else {
+			event = domain.CredEventGitWritten
+		}
+
+		// Build host list for detail
+		allHosts := make([]string, 0, len(entries))
+		for _, e := range entries {
+			allHosts = append(allHosts, e.Host)
+		}
+		detail := strings.Join(allHosts, ", ")
+
+		cs.RecordEvent(event, detail)
+
+		// Update read projection
+		cs.GitHosts = allHosts
+		now := time.Now().UTC()
+		cs.LastSyncedAt = &now
+
+		return s.SaveState(state)
+	})
 }
 
 // chownGitCredentialFile sets ownership of the git credential file to the given user.

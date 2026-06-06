@@ -9,20 +9,32 @@ import (
 )
 
 type memStore struct {
-	instances map[string]*WorkspaceInstance
+	instances map[string]*Workspace
 	locked    bool
 }
 
 func newMemStore() *memStore {
-	return &memStore{instances: make(map[string]*WorkspaceInstance)}
+	return &memStore{instances: make(map[string]*Workspace)}
 }
 
-func (m *memStore) Load() (map[string]*WorkspaceInstance, error) {
+func (m *memStore) Load() (map[string]*Workspace, error) {
 	return m.instances, nil
 }
 
-func (m *memStore) Save(instances map[string]*WorkspaceInstance) error {
+func (m *memStore) Save(instances map[string]*Workspace) error {
 	m.instances = instances
+	return nil
+}
+
+func (m *memStore) LoadState() (*DaemonState, error) {
+	return &DaemonState{
+		Workspaces:  m.instances,
+		Credentials: make(map[string]*CredentialState),
+	}, nil
+}
+
+func (m *memStore) SaveState(state *DaemonState) error {
+	m.instances = state.Workspaces
 	return nil
 }
 
@@ -976,10 +988,10 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	hasHydrateStarted := false
 	hasHydrateCompleted := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateStarted {
+		if ev.Event == string(EventHydrateStarted) {
 			hasHydrateStarted = true
 		}
-		if ev.Event == EventHydrateCompleted {
+		if ev.Event == string(EventHydrateCompleted) {
 			hasHydrateCompleted = true
 		}
 	}
@@ -1041,7 +1053,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	// Verify hydrate_skipped event with "uncommitted changes" detail
 	hasSkipped := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "uncommitted changes") {
+		if ev.Event == string(EventHydrateSkipped) && strings.Contains(ev.Detail, "uncommitted changes") {
 			hasSkipped = true
 		}
 	}
@@ -1101,7 +1113,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	// Verify hydrate_skipped event with divergence detail
 	hasSkipped := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "diverged") {
+		if ev.Event == string(EventHydrateSkipped) && strings.Contains(ev.Detail, "diverged") {
 			hasSkipped = true
 		}
 	}
@@ -1491,14 +1503,14 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	}
 
 	for i, expected := range expectedEvents {
-		if inst.Events[i].Event != expected {
+		if inst.Events[i].Event != string(expected) {
 			t.Errorf("event[%d]: expected %s, got %s", i, expected, inst.Events[i].Event)
 		}
 	}
 
 	// Verify template_reinit_completed has the repo slug as detail
 	for _, ev := range inst.Events {
-		if ev.Event == EventTemplateReinitCompleted {
+		if ev.Event == string(EventTemplateReinitCompleted) {
 			if ev.Detail != "org/my-template" {
 				t.Errorf("expected template_reinit_completed detail to be 'org/my-template', got %q", ev.Detail)
 			}
@@ -1687,24 +1699,24 @@ func TestValidateSpec_TemplateWithoutVCSCloneURL(t *testing.T) {
 
 func TestTemplateEvents_DoNotAffectStatus(t *testing.T) {
 	// AC: Template events are informational and do not change workspace status
-	inst := &WorkspaceInstance{}
-	appendEvent(inst, EventTemplateCloneStarted, "url")
+	inst := &Workspace{}
+	inst.RecordEvent(EventTemplateCloneStarted, "url")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_clone_started, got %s", inst.Status)
 	}
 
-	appendEvent(inst, EventTemplateCloneCompleted, "")
+	inst.RecordEvent(EventTemplateCloneCompleted, "")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_clone_completed, got %s", inst.Status)
 	}
 
-	appendEvent(inst, EventTemplateReinitCompleted, "org/tmpl")
+	inst.RecordEvent(EventTemplateReinitCompleted, "org/tmpl")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_reinit_completed, got %s", inst.Status)
 	}
 
 	// Once worktree_created fires, status becomes Ready
-	appendEvent(inst, EventWorktreeCreated, "main")
+	inst.RecordEvent(EventWorktreeCreated, "main")
 	if inst.Status != StatusReady {
 		t.Fatalf("expected ready after worktree_created, got %s", inst.Status)
 	}

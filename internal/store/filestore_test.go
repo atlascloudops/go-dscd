@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,7 @@ func TestRoundTrip(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	errMsg := "test error"
-	instances := map[string]*domain.WorkspaceInstance{
+	instances := map[string]*domain.Workspace{
 		"ws1": {
 			Spec: domain.WorkspaceSpec{
 				Name: "ws1",
@@ -90,7 +91,7 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 	s := NewFileStore(path)
 
 	ts := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
-	instances := map[string]*domain.WorkspaceInstance{
+	instances := map[string]*domain.Workspace{
 		"ws-ide": {
 			Spec: domain.WorkspaceSpec{
 				Name: "ws-ide",
@@ -109,11 +110,12 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 			},
 			Status:         domain.StatusReady,
 			IDE: &domain.IDEInstance{
+				Name:    "ws-ide",
 				Adapter: "openvscode-server",
 				Port:    9100,
-				Events: []domain.IDEEventRecord{
-					{Event: domain.IDEEventStarted, Timestamp: ts, Detail: "port=9100"},
-					{Event: domain.IDEEventReady, Timestamp: ts, Detail: "port=9100"},
+				Events: []domain.EventRecord{
+					{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventStarted), Timestamp: ts, Detail: "port=9100"},
+					{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventReady), Timestamp: ts, Detail: "port=9100"},
 				},
 				Status: domain.StatusReady,
 			},
@@ -145,11 +147,14 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 	if len(ws.IDE.Events) != 2 {
 		t.Fatalf("IDE.Events: expected 2, got %d", len(ws.IDE.Events))
 	}
-	if ws.IDE.Events[0].Event != domain.IDEEventStarted {
+	if ws.IDE.Events[0].Event != string(domain.IDEEventStarted) {
 		t.Errorf("IDE.Events[0]: expected %q, got %q", domain.IDEEventStarted, ws.IDE.Events[0].Event)
 	}
-	if ws.IDE.Events[1].Event != domain.IDEEventReady {
+	if ws.IDE.Events[1].Event != string(domain.IDEEventReady) {
 		t.Errorf("IDE.Events[1]: expected %q, got %q", domain.IDEEventReady, ws.IDE.Events[1].Event)
+	}
+	if ws.IDE.Name != "ws-ide" {
+		t.Errorf("IDE.Name: expected %q, got %q", "ws-ide", ws.IDE.Name)
 	}
 	if ws.IDE.Status != domain.StatusReady {
 		t.Errorf("IDE.Status: expected %q, got %q", domain.StatusReady, ws.IDE.Status)
@@ -164,6 +169,173 @@ func TestLoadNonexistent(t *testing.T) {
 	}
 	if len(instances) != 0 {
 		t.Fatalf("expected empty map, got %d entries", len(instances))
+	}
+}
+
+func TestRoundTrip_Credentials(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	s := NewFileStore(path)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	state := &domain.DaemonState{
+		Workspaces: map[string]*domain.Workspace{
+			"ws1": {
+				Spec: domain.WorkspaceSpec{
+					Name: "ws1",
+					VCS: domain.VCSTarget{
+						Host:   "github.com",
+						Repo:   "org/repo1",
+						Branch: "main",
+					},
+					Owner: "jperez",
+				},
+				Status: domain.StatusReady,
+			},
+		},
+		Credentials: map[string]*domain.CredentialState{
+			"jperez": {
+				Owner:        "jperez",
+				GitHosts:     []string{"github.com", "gitlab.com"},
+				SsoSession:   "dsc-session",
+				LastSyncedAt: &now,
+			},
+		},
+	}
+
+	// Record an event on the credential state
+	state.Credentials["jperez"].RecordEvent(domain.CredEventGitWritten, "github.com, gitlab.com")
+
+	if err := s.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := s.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify workspaces survived
+	if len(loaded.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(loaded.Workspaces))
+	}
+
+	// Verify credentials
+	if len(loaded.Credentials) != 1 {
+		t.Fatalf("expected 1 credential entry, got %d", len(loaded.Credentials))
+	}
+
+	cs := loaded.Credentials["jperez"]
+	if cs == nil {
+		t.Fatal("expected jperez credential state")
+	}
+	if cs.Owner != "jperez" {
+		t.Errorf("owner: expected %q, got %q", "jperez", cs.Owner)
+	}
+	if len(cs.GitHosts) != 2 {
+		t.Fatalf("git_hosts: expected 2, got %d", len(cs.GitHosts))
+	}
+	if cs.SsoSession != "dsc-session" {
+		t.Errorf("sso_session: expected %q, got %q", "dsc-session", cs.SsoSession)
+	}
+	if cs.LastSyncedAt == nil || !cs.LastSyncedAt.Equal(now) {
+		t.Errorf("last_synced_at mismatch: got %v, want %v", cs.LastSyncedAt, now)
+	}
+
+	// Verify event
+	if len(cs.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(cs.Events))
+	}
+	evt := cs.Events[0]
+	if evt.Scope.Kind != domain.ScopeKindCredentials || evt.Scope.Name != "jperez" {
+		t.Errorf("event scope: expected credentials:jperez, got %s", evt.Scope.String())
+	}
+	if evt.Event != string(domain.CredEventGitWritten) {
+		t.Errorf("event: expected %q, got %q", domain.CredEventGitWritten, evt.Event)
+	}
+}
+
+func TestBackwardCompat_NoCredentialsKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	// Write a state file without a credentials key (simulating pre-credentials format)
+	legacy := `{
+		"version": "v1",
+		"updated_at": "2026-05-21T10:00:00Z",
+		"workspaces": {
+			"ws1": {
+				"spec": {
+					"name": "ws1",
+					"vcs": {"host": "github.com", "repo": "org/repo1", "branch": "main"},
+					"owner": "user"
+				},
+				"status": "ready"
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(legacy), 0664); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewFileStore(path)
+	state, err := s.LoadState()
+	if err != nil {
+		t.Fatalf("loading legacy state without credentials key: %v", err)
+	}
+
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(state.Workspaces))
+	}
+	if state.Credentials == nil {
+		t.Fatal("expected non-nil credentials map")
+	}
+	if len(state.Credentials) != 0 {
+		t.Fatalf("expected empty credentials map, got %d entries", len(state.Credentials))
+	}
+}
+
+func TestSave_PreservesCredentials(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	s := NewFileStore(path)
+
+	// Save state with credentials
+	state := &domain.DaemonState{
+		Workspaces: map[string]*domain.Workspace{},
+		Credentials: map[string]*domain.CredentialState{
+			"jperez": {
+				Owner:    "jperez",
+				GitHosts: []string{"github.com"},
+			},
+		},
+	}
+	if err := s.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use workspace-only Save — credentials should be preserved
+	if err := s.Save(map[string]*domain.Workspace{
+		"ws1": {
+			Spec: domain.WorkspaceSpec{Name: "ws1", Owner: "jperez"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load full state and verify credentials survived
+	loaded, err := s.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Credentials) != 1 {
+		t.Fatalf("expected 1 credential entry after workspace-only save, got %d", len(loaded.Credentials))
+	}
+	if loaded.Credentials["jperez"] == nil {
+		t.Fatal("expected jperez credential state to survive workspace-only save")
+	}
+	if len(loaded.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(loaded.Workspaces))
 	}
 }
 

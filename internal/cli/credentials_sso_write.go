@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/atlascloudops/go-dscd/internal/domain"
 	"github.com/atlascloudops/go-dscd/internal/infrastructure"
@@ -19,7 +20,7 @@ type SsoWriteResult struct {
 	ActiveProfile   string `json:"active_profile"`
 }
 
-func newCredentialsSsoWriteCmd() *cobra.Command {
+func newCredentialsSsoWriteCmd(store domain.StateStore) *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
@@ -92,6 +93,9 @@ func newCredentialsSsoWriteCmd() *cobra.Command {
 			// 4. Best-effort chown on written files
 			chownSsoFiles(owner, cachePath)
 
+			// 5. Record credential events in state
+			recordSsoCredentialEvents(store, owner, payload)
+
 			result := SsoWriteResult{
 				ProfilesWritten: len(payload.Profiles),
 				TokenCached:     true,
@@ -114,6 +118,37 @@ func newCredentialsSsoWriteCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&owner, "owner", "", "username that owns the credential files")
 	return cmd
+}
+
+// recordSsoCredentialEvents records SSO credential events in the daemon state.
+// This is best-effort — errors do not fail the write operation.
+func recordSsoCredentialEvents(s domain.StateStore, owner string, payload domain.SsoWritePayload) {
+	_ = s.WithLock(func() error {
+		state, err := s.LoadState()
+		if err != nil {
+			return err
+		}
+
+		cs := state.Credentials[owner]
+		if cs == nil {
+			cs = &domain.CredentialState{Owner: owner}
+			state.Credentials[owner] = cs
+		}
+
+		// Record config write event
+		configDetail := fmt.Sprintf("session=%s, profiles=%d", payload.Session.SessionName, len(payload.Profiles))
+		cs.RecordEvent(domain.CredEventSsoConfigWritten, configDetail)
+
+		// Record token cache event
+		cs.RecordEvent(domain.CredEventSsoTokenCached, payload.Session.SessionName)
+
+		// Update read projections
+		cs.SsoSession = payload.Session.SessionName
+		now := time.Now().UTC()
+		cs.LastSyncedAt = &now
+
+		return s.SaveState(state)
+	})
 }
 
 // chownSsoFiles sets ownership of SSO-related files to the given user.
