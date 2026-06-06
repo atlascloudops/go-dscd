@@ -65,9 +65,9 @@ func NewRootCommand(version string) *cobra.Command {
 	fs := &lazyStore{factory: storeFactory}
 
 	workspace.AddCommand(
-		newWorkspaceProvisionCmd(fs, logDir),
-		newWorkspaceDeprovisionCmd(fs, logDir),
-		newWorkspacePruneCmd(fs, logDir),
+		newWorkspaceProvisionCmd(fs, logDir, al.get()),
+		newWorkspaceDeprovisionCmd(fs, logDir, al.get()),
+		newWorkspacePruneCmd(fs, logDir, al.get()),
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
 		newWorkspaceSyncCmd(fs, al.get()),

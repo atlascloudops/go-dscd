@@ -14,6 +14,25 @@ type Provisioner struct {
 	LogDir        string         // /opt/dsc/var/dscd/logs/
 	IDEAdapter    IDEAdapter     // optional; nil skips IDE phase
 	PortAllocator *PortAllocator // optional; nil skips IDE phase
+	ActivityLog   *ActivityLog   // optional; nil skips activity log writes
+}
+
+// recordWorkspaceEvent records a workspace event via the aggregate's RecordEvent
+// method and appends the resulting EventRecord to the activity log.
+func (p *Provisioner) recordWorkspaceEvent(w *Workspace, event WorkspaceEvent, detail string) {
+	w.RecordEvent(event, detail)
+	if p.ActivityLog != nil {
+		_ = p.ActivityLog.Append(w.Events[len(w.Events)-1])
+	}
+}
+
+// recordIDEEvent records an IDE event via the aggregate's RecordEvent method
+// and appends the resulting EventRecord to the activity log.
+func (p *Provisioner) recordIDEEvent(ide *IDEInstance, event IDEEvent, detail string) {
+	ide.RecordEvent(event, detail)
+	if p.ActivityLog != nil {
+		_ = p.ActivityLog.Append(ide.Events[len(ide.Events)-1])
+	}
 }
 
 // Provision creates a workspace using dual-mode provisioning:
@@ -49,7 +68,6 @@ func (p *Provisioner) Provision(store StateStore, spec WorkspaceSpec) (*Workspac
 // returnIdempotent handles the case where the worktree already exists.
 func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
 	now := time.Now().UTC()
-	p.writeLog(spec.Name, "provision", "Worktree already exists at %s, skipping", spec.ProjectRoot)
 
 	// Load existing instance to preserve event history
 	var inst *Workspace
@@ -66,7 +84,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 				Spec:          spec,
 						ProvisionedAt:  &now,
 			}
-			inst.RecordEvent(EventWorktreeCreated, "detected by provision (idempotent)")
+			p.recordWorkspaceEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
 		// Hydrate before resolving head commit so it reflects the latest state
 		if dirExists(spec.BareRoot) {
@@ -88,20 +106,18 @@ func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*W
 	}); err != nil {
 		return nil, err
 	}
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s (idempotent)", inst.Status)
 	return inst, nil
 }
 
 // provisionBareCloneAndDefault creates a bare clone and the default worktree.
 func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
 	now := time.Now().UTC()
-	p.writeLog(spec.Name, "provision", "Bare-cloning %s into %s", spec.VCS.CloneURL, spec.BareRoot)
 
 	inst := &Workspace{
 		Spec:           spec,
 		ProvisionedAt:  &now,
 	}
-	inst.RecordEvent(EventCloneStarted, spec.VCS.CloneURL)
+	p.recordWorkspaceEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
 
 	// 1. mkdir -p <repo_root>
 	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
@@ -111,17 +127,16 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 	// 2. git clone --bare <clone_url> <bare_root>
 	if err := p.bareClone(spec); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
-		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git clone --bare failed",
 			Detail:  err.Error(),
 		}
 	}
-	inst.RecordEvent(EventCloneCompleted, "")
+	p.recordWorkspaceEvent(inst, EventCloneCompleted, "")
 
 	// 3. Resolve default branch
 	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
@@ -129,26 +144,22 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 		p.writeLog(spec.Name, "provision", "Could not resolve default branch, falling back to main: %v", err)
 		defaultBranch = "main"
 	}
-	p.writeLog(spec.Name, "provision", "Default branch resolved: %s", defaultBranch)
 
 	// 4. git -C <bare_root> worktree add ../default <default_branch>
-	inst.RecordEvent(EventWorktreeCreating, defaultBranch)
+	p.recordWorkspaceEvent(inst, EventWorktreeCreating, defaultBranch)
 	worktreePath := filepath.Join(spec.RepoRoot, "default")
 	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
-		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git worktree add (default) failed",
 			Detail:  err.Error(),
 		}
 	}
-	inst.RecordEvent(EventWorktreeCreated, defaultBranch)
-
-	p.writeLog(spec.Name, "provision", "Bare clone + default worktree complete")
+	p.recordWorkspaceEvent(inst, EventWorktreeCreated, defaultBranch)
 
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
@@ -158,7 +169,6 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
 }
 
@@ -175,7 +185,6 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec Worksp
 func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
 	now := time.Now().UTC()
 	tmpl := spec.Template
-	p.writeLog(spec.Name, "provision", "Template provisioning from %s", tmpl.CloneURL)
 
 	inst := &Workspace{
 		Spec:           spec,
@@ -183,7 +192,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	}
 
 	// 1. Clone template into a temporary directory
-	inst.RecordEvent(EventTemplateCloneStarted, tmpl.CloneURL)
+	p.recordWorkspaceEvent(inst, EventTemplateCloneStarted, tmpl.CloneURL)
 	tmpDir := filepath.Join(spec.RepoRoot, ".template-tmp")
 	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
@@ -191,18 +200,16 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 
 	if err := p.cloneInto(tmpl.CloneURL, tmpDir, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("template clone failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
-		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "template clone failed",
 			Detail:  err.Error(),
 		}
 	}
-	inst.RecordEvent(EventTemplateCloneCompleted, "")
-	p.writeLog(spec.Name, "provision", "Template cloned to %s", tmpDir)
+	p.recordWorkspaceEvent(inst, EventTemplateCloneCompleted, "")
 
 	// 2. Strip .git from the cloned content
 	os.RemoveAll(filepath.Join(tmpDir, ".git"))
@@ -211,7 +218,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	scratchDir := filepath.Join(spec.RepoRoot, ".template-scratch")
 	if err := p.gitInit(scratchDir, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git init (scratch) failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
 		os.RemoveAll(tmpDir)
@@ -224,7 +231,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 
 	if err := p.copyDir(tmpDir, scratchDir); err != nil {
 		errMsg := fmt.Sprintf("copy template files failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
 		os.RemoveAll(tmpDir)
@@ -240,7 +247,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	commitMsg := fmt.Sprintf("Initial commit from template %s", tmpl.Repo)
 	if err := p.gitAddAndCommit(scratchDir, commitMsg, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("initial commit failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
 		os.RemoveAll(scratchDir)
@@ -254,7 +261,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	// 4. Clone bare from scratch, then create worktree
 	if err := p.bareCloneLocal(scratchDir, spec.BareRoot, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare (from scratch) failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
 		os.RemoveAll(scratchDir)
@@ -277,7 +284,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	worktreePath := filepath.Join(spec.RepoRoot, "default")
 	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
 		return inst, &ProvisionError{
@@ -287,8 +294,8 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 		}
 	}
 
-	inst.RecordEvent(EventTemplateReinitCompleted, tmpl.Repo)
-	inst.RecordEvent(EventWorktreeCreated, defaultBranch)
+	p.recordWorkspaceEvent(inst, EventTemplateReinitCompleted, tmpl.Repo)
+	p.recordWorkspaceEvent(inst, EventWorktreeCreated, defaultBranch)
 
 	// 5. Configure remotes on the bare repo
 	p.gitRemoteAdd(spec.BareRoot, "template", tmpl.CloneURL, spec.Owner)
@@ -297,8 +304,6 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 		p.gitRemoteAdd(spec.BareRoot, "origin", spec.VCS.CloneURL, spec.Owner)
 	}
 
-	p.writeLog(spec.Name, "provision", "Template provisioning complete")
-
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
 	p.startIDE(inst, spec)
 
@@ -306,7 +311,6 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
 }
 
@@ -458,7 +462,6 @@ func ResolveTemplateRepo(bareRoot, owner string) string {
 // If needsBareClone is true, the bare clone is created first with clone events.
 func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, needsBareClone bool) (*Workspace, error) {
 	now := time.Now().UTC()
-	p.writeLog(spec.Name, "provision", "Adding worktree %s (branch: %s)", spec.WorktreeName, spec.VCS.Branch)
 
 	inst := &Workspace{
 		Spec:           spec,
@@ -467,20 +470,19 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 
 	// If bare clone doesn't exist yet, create it with events
 	if needsBareClone {
-		inst.RecordEvent(EventCloneStarted, spec.VCS.CloneURL)
+		p.recordWorkspaceEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
 		if err := p.bareClone(spec); err != nil {
 			errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-			inst.RecordEvent(EventProvisionFailed, errMsg)
+			p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 			inst.LastError = &errMsg
 			p.persistState(store, spec.Name, inst)
-			p.writeLog(spec.Name, "error", "%s", errMsg)
 			return inst, &ProvisionError{
 				Code:    ErrCloneFailed,
 				Message: "git clone --bare failed",
 				Detail:  err.Error(),
 			}
 		}
-		inst.RecordEvent(EventCloneCompleted, "")
+		p.recordWorkspaceEvent(inst, EventCloneCompleted, "")
 	}
 
 	// Determine worktree path
@@ -500,22 +502,19 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 	p.fetchBranch(spec.BareRoot, spec.VCS.Branch, spec.Owner)
 
 	// git -C <bare_root> worktree add <path> <branch>
-	inst.RecordEvent(EventWorktreeCreating, spec.VCS.Branch)
+	p.recordWorkspaceEvent(inst, EventWorktreeCreating, spec.VCS.Branch)
 	if err := p.addWorktree(spec.BareRoot, worktreePath, spec.VCS.Branch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		inst.RecordEvent(EventProvisionFailed, errMsg)
+		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
 		inst.LastError = &errMsg
 		p.persistState(store, spec.Name, inst)
-		p.writeLog(spec.Name, "error", "%s", errMsg)
 		return inst, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git worktree add failed",
 			Detail:  err.Error(),
 		}
 	}
-	inst.RecordEvent(EventWorktreeCreated, spec.VCS.Branch)
-
-	p.writeLog(spec.Name, "provision", "Worktree add complete")
+	p.recordWorkspaceEvent(inst, EventWorktreeCreated, spec.VCS.Branch)
 
 	p.hydrate(inst, spec)
 	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
@@ -525,7 +524,6 @@ func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, ne
 		return nil, err
 	}
 
-	p.writeLog(spec.Name, "provision", "Lifecycle: %s", inst.Status)
 	return inst, nil
 }
 
@@ -543,8 +541,7 @@ func (p *Provisioner) startIDE(inst *Workspace, spec WorkspaceSpec) {
 		if inst.IDE == nil {
 			inst.IDE = &IDEInstance{Name: spec.Name, Adapter: p.IDEAdapter.Name(), Port: 0}
 		}
-		inst.IDE.RecordEvent(IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
-		p.writeLog(spec.Name, "ide", "Port allocation failed: %v", err)
+		p.recordIDEEvent(inst.IDE, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
 		return
 	}
 
@@ -562,15 +559,13 @@ func (p *Provisioner) startIDE(inst *Workspace, spec WorkspaceSpec) {
 		Port:         port,
 	}
 
-	inst.IDE.RecordEvent(IDEEventStarted, fmt.Sprintf("port=%d", port))
+	p.recordIDEEvent(inst.IDE, IDEEventStarted, fmt.Sprintf("port=%d", port))
 	if err := p.IDEAdapter.Start(ctx); err != nil {
-		inst.IDE.RecordEvent(IDEEventFailed, err.Error())
-		p.writeLog(spec.Name, "ide", "Start failed: %v", err)
+		p.recordIDEEvent(inst.IDE, IDEEventFailed, err.Error())
 		return
 	}
 
-	inst.IDE.RecordEvent(IDEEventReady, fmt.Sprintf("port=%d", port))
-	p.writeLog(spec.Name, "ide", "Started on port %d", port)
+	p.recordIDEEvent(inst.IDE, IDEEventReady, fmt.Sprintf("port=%d", port))
 }
 
 // stopIDE stops the IDE adapter and releases the port. Best-effort.
@@ -598,8 +593,7 @@ func (p *Provisioner) stopIDE(inst *Workspace, spec WorkspaceSpec) {
 		p.writeLog(spec.Name, "ide", "Port release failed: %v", err)
 	}
 
-	inst.IDE.RecordEvent(IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
-	p.writeLog(spec.Name, "ide", "Stopped")
+	p.recordIDEEvent(inst.IDE, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
 }
 
 // healthCheckIDE checks if a running IDE is still healthy, updating status via events.
@@ -619,8 +613,7 @@ func (p *Provisioner) healthCheckIDE(inst *Workspace) {
 	wasReady := inst.IDE.Status == StatusReady
 
 	if err != nil && wasReady {
-		inst.IDE.RecordEvent(IDEEventStopped, "health check failed")
-		p.writeLog(inst.Spec.Name, "ide", "Health check failed, marking inactive")
+		p.recordIDEEvent(inst.IDE, IDEEventStopped, "health check failed")
 	}
 }
 
@@ -651,13 +644,11 @@ func (p *Provisioner) resolveIDEAdapter(spec WorkspaceSpec) error {
 // fetch failures, dirty worktrees, and diverged branches are logged and skipped
 // without blocking provisioning.
 func (p *Provisioner) hydrate(inst *Workspace, spec WorkspaceSpec) {
-	inst.RecordEvent(EventHydrateStarted, "")
-	p.writeLog(spec.Name, "hydrate", "Starting hydration for %s", spec.BareRoot)
+	p.recordWorkspaceEvent(inst, EventHydrateStarted, "")
 
 	entries, err := ListWorktreeEntries(spec.BareRoot, spec.Owner)
 	if err != nil {
-		p.writeLog(spec.Name, "hydrate", "Failed to list worktrees: %v", err)
-		inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("worktree list failed: %v", err))
+		p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("worktree list failed: %v", err))
 		return
 	}
 
@@ -673,21 +664,18 @@ func (p *Provisioner) hydrate(inst *Workspace, spec WorkspaceSpec) {
 		targetBranch := entry.Branch
 		if targetBranch == "" {
 			// Detached HEAD or unknown branch — skip
-			p.writeLog(spec.Name, "hydrate", "Skipping %s: no branch", entry.Path)
-			inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("%s: detached HEAD", filepath.Base(entry.Path)))
+			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: detached HEAD", filepath.Base(entry.Path)))
 			continue
 		}
 
 		// Check for dirty worktree before pulling
 		dirty, dirtyErr := IsWorktreeDirty(entry.Path, spec.Owner)
 		if dirtyErr != nil {
-			p.writeLog(spec.Name, "hydrate", "Dirty check failed for %s: %v", entry.Path, dirtyErr)
-			inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("%s: dirty check failed: %v", filepath.Base(entry.Path), dirtyErr))
+			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: dirty check failed: %v", filepath.Base(entry.Path), dirtyErr))
 			continue
 		}
 		if dirty {
-			p.writeLog(spec.Name, "hydrate", "Skipping %s: uncommitted changes", entry.Path)
-			inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("%s: uncommitted changes", filepath.Base(entry.Path)))
+			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: uncommitted changes", filepath.Base(entry.Path)))
 			continue
 		}
 
@@ -698,17 +686,14 @@ func (p *Provisioner) hydrate(inst *Workspace, spec WorkspaceSpec) {
 		if pullErr != nil {
 			errStr := pullErr.Error()
 			if strings.Contains(errStr, "Not possible to fast-forward") || strings.Contains(errStr, "fatal:") {
-				p.writeLog(spec.Name, "hydrate", "FF pull failed for %s: %v", entry.Path, pullErr)
-				inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("%s: branch diverged, ff-only not possible", filepath.Base(entry.Path)))
+				p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: branch diverged, ff-only not possible", filepath.Base(entry.Path)))
 			} else {
-				p.writeLog(spec.Name, "hydrate", "Pull failed for %s: %v", entry.Path, pullErr)
-				inst.RecordEvent(EventHydrateSkipped, fmt.Sprintf("%s: pull failed: %v", filepath.Base(entry.Path), pullErr))
+				p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: pull failed: %v", filepath.Base(entry.Path), pullErr))
 			}
 			continue
 		}
 
-		p.writeLog(spec.Name, "hydrate", "Hydrated %s (branch: %s)", entry.Path, targetBranch)
-		inst.RecordEvent(EventHydrateCompleted, targetBranch)
+		p.recordWorkspaceEvent(inst, EventHydrateCompleted, targetBranch)
 	}
 }
 

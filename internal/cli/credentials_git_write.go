@@ -18,7 +18,7 @@ type GitCredentialsWriteResult struct {
 	Added   []string `json:"added"`
 }
 
-func newCredentialsGitWriteCmd(store domain.StateStore) *cobra.Command {
+func newCredentialsGitWriteCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
@@ -113,8 +113,8 @@ func newCredentialsGitWriteCmd(store domain.StateStore) *cobra.Command {
 			// Best-effort chown to the target user
 			chownGitCredentialFile(path, owner)
 
-			// Record credential event in state
-			recordGitCredentialEvent(store, owner, updated, added, entries)
+			// Record credential event in state and activity log
+			recordGitCredentialEvent(store, activityLog, owner, updated, added, entries)
 
 			result := GitCredentialsWriteResult{
 				Updated: updated,
@@ -147,9 +147,10 @@ func newCredentialsGitWriteCmd(store domain.StateStore) *cobra.Command {
 	return cmd
 }
 
-// recordGitCredentialEvent records a git credential event in the daemon state.
+// recordGitCredentialEvent records a git credential event in the daemon state
+// and appends it to the activity log.
 // This is best-effort — errors are logged but do not fail the write operation.
-func recordGitCredentialEvent(s domain.StateStore, owner string, updated, added []string, entries []domain.GitCredentialEntry) {
+func recordGitCredentialEvent(s domain.StateStore, al *domain.ActivityLog, owner string, updated, added []string, entries []domain.GitCredentialEntry) {
 	_ = s.WithLock(func() error {
 		state, err := s.LoadState()
 		if err != nil {
@@ -178,6 +179,11 @@ func recordGitCredentialEvent(s domain.StateStore, owner string, updated, added 
 		detail := strings.Join(allHosts, ", ")
 
 		cs.RecordEvent(event, detail)
+
+		// Append to activity log (best-effort)
+		if al != nil && len(cs.Events) > 0 {
+			_ = al.Append(cs.Events[len(cs.Events)-1])
+		}
 
 		// Update read projection
 		cs.GitHosts = allHosts

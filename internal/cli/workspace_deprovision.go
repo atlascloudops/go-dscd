@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string) *cobra.Command {
+func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string, activityLog *domain.ActivityLog) *cobra.Command {
 	var force bool
 	var all bool
 
@@ -22,6 +22,7 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, logDir string) *cobra.C
 				LogDir:        logDir,
 				IDEAdapter:    domain.NewCodeServerAdapter(),
 				PortAllocator: domain.NewPortAllocator(defaultPortFile),
+				ActivityLog:   activityLog,
 			}
 
 			var result *domain.DeprovisionResult

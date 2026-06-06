@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceProvisionCmd(store domain.StateStore, logDir string) *cobra.Command {
+func newWorkspaceProvisionCmd(store domain.StateStore, logDir string, activityLog *domain.ActivityLog) *cobra.Command {
 	return &cobra.Command{
 		Use:   "provision <spec-json>",
 		Short: "Provision a workspace from a JSON spec",
@@ -29,6 +29,7 @@ func newWorkspaceProvisionCmd(store domain.StateStore, logDir string) *cobra.Com
 				LogDir:        logDir,
 				IDEAdapter:    domain.NewCodeServerAdapter(),
 				PortAllocator: domain.NewPortAllocator(defaultPortFile),
+				ActivityLog:   activityLog,
 			}
 
 			inst, err := provisioner.Provision(store, spec)

@@ -20,7 +20,7 @@ type SsoWriteResult struct {
 	ActiveProfile   string `json:"active_profile"`
 }
 
-func newCredentialsSsoWriteCmd(store domain.StateStore) *cobra.Command {
+func newCredentialsSsoWriteCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	var owner string
 
 	cmd := &cobra.Command{
@@ -93,8 +93,8 @@ func newCredentialsSsoWriteCmd(store domain.StateStore) *cobra.Command {
 			// 4. Best-effort chown on written files
 			chownSsoFiles(owner, cachePath)
 
-			// 5. Record credential events in state
-			recordSsoCredentialEvents(store, owner, payload)
+			// 5. Record credential events in state and activity log
+			recordSsoCredentialEvents(store, activityLog, owner, payload)
 
 			result := SsoWriteResult{
 				ProfilesWritten: len(payload.Profiles),
@@ -120,9 +120,10 @@ func newCredentialsSsoWriteCmd(store domain.StateStore) *cobra.Command {
 	return cmd
 }
 
-// recordSsoCredentialEvents records SSO credential events in the daemon state.
+// recordSsoCredentialEvents records SSO credential events in the daemon state
+// and appends them to the activity log.
 // This is best-effort — errors do not fail the write operation.
-func recordSsoCredentialEvents(s domain.StateStore, owner string, payload domain.SsoWritePayload) {
+func recordSsoCredentialEvents(s domain.StateStore, al *domain.ActivityLog, owner string, payload domain.SsoWritePayload) {
 	_ = s.WithLock(func() error {
 		state, err := s.LoadState()
 		if err != nil {
@@ -139,8 +140,18 @@ func recordSsoCredentialEvents(s domain.StateStore, owner string, payload domain
 		configDetail := fmt.Sprintf("session=%s, profiles=%d", payload.Session.SessionName, len(payload.Profiles))
 		cs.RecordEvent(domain.CredEventSsoConfigWritten, configDetail)
 
+		// Append config event to activity log (best-effort)
+		if al != nil && len(cs.Events) > 0 {
+			_ = al.Append(cs.Events[len(cs.Events)-1])
+		}
+
 		// Record token cache event
 		cs.RecordEvent(domain.CredEventSsoTokenCached, payload.Session.SessionName)
+
+		// Append token event to activity log (best-effort)
+		if al != nil && len(cs.Events) > 0 {
+			_ = al.Append(cs.Events[len(cs.Events)-1])
+		}
 
 		// Update read projections
 		cs.SsoSession = payload.Session.SessionName

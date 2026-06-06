@@ -166,6 +166,18 @@ func parseLine(line string) (EventRecord, error) {
 	}, nil
 }
 
+// ParseActivityLine reconstructs an EventRecord from a formatted activity log line.
+// Exported for use by the follow-mode tail reader in the CLI layer.
+func ParseActivityLine(line string) (EventRecord, error) {
+	return parseLine(line)
+}
+
+// MatchesActivityFilter returns true if the record satisfies all non-zero filter fields.
+// Exported for use by the follow-mode tail reader in the CLI layer.
+func MatchesActivityFilter(r EventRecord, f ActivityLogFilter) bool {
+	return matchesFilter(r, f)
+}
+
 // matchesFilter returns true if the record satisfies all non-zero filter fields.
 func matchesFilter(r EventRecord, f ActivityLogFilter) bool {
 	if f.ScopeKind != "" && r.Scope.Kind != f.ScopeKind {
