@@ -61,7 +61,7 @@ type IDEAdapter interface {
 
 // CodeServerAdapter manages an openvscode-server instance via systemd template units.
 type CodeServerAdapter struct {
-	// EnvDir is the directory for per-instance env files (default: /opt/dsc/var/dscd/ide/).
+	// EnvDir is the directory for per-instance env files (default: /var/lib/dscd/ide/).
 	EnvDir string
 	// SystemdRunner abstracts systemctl invocations for testability.
 	SystemdRunner SystemdRunner
@@ -130,7 +130,7 @@ func (d *defaultHTTPChecker) Check(url string) error {
 // NewCodeServerAdapter creates a CodeServerAdapter with production defaults.
 func NewCodeServerAdapter() *CodeServerAdapter {
 	return &CodeServerAdapter{
-		EnvDir:        "/opt/dsc/var/dscd/ide/",
+		EnvDir:        "/var/lib/dscd/ide/",
 		SystemdRunner: &defaultSystemdRunner{},
 		HTTPChecker:   &defaultHTTPChecker{},
 		PollTimeout:   5 * time.Second,

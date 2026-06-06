@@ -10,8 +10,7 @@ import (
 )
 
 // DefaultActivityLogPath is the default path for the unified activity log file.
-// Aligned with the existing application root until the layout story lands.
-const DefaultActivityLogPath = "/opt/dsc/var/dscd/activity.log"
+const DefaultActivityLogPath = "/var/lib/dscd/activity.log"
 
 // ActivityLogFilter controls which events are returned by ActivityLog.Read.
 // All fields are optional — zero values mean "no filter".

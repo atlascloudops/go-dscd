@@ -141,7 +141,7 @@ Returned by `workspace sync`.
 
 ## State File (`state.json`)
 
-Persisted at `--state-path` (default `/opt/dsc/var/dscd/state.json`).
+Persisted at `--state-path` (default `/var/lib/dscd/state.json`).
 
 ```json
 {

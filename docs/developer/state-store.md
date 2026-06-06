@@ -33,7 +33,7 @@ Design choices:
 
 ## FileStore Implementation
 
-Single JSON file, default path `/opt/dsc/var/dscd/state.json`.
+Single JSON file, default path `/var/lib/dscd/state.json`.
 
 ### File Schema
 
@@ -62,12 +62,11 @@ Single JSON file, default path `/opt/dsc/var/dscd/state.json`.
 ### File Layout on Pod
 
 ```
-/opt/dsc/var/dscd/
+/var/lib/dscd/
 ├── state.json          # All workspace instances
 ├── state.json.lock     # Advisory flock file
 ├── ports.json          # IDE port allocations (PortAllocator)
-├── logs/
-│   └── <workspace>.log # Per-workspace provisioning logs
+├── activity.log        # Unified domain event log
 └── ide/
     └── <owner>--<worktree>.env  # Per-IDE systemd env files
 ```

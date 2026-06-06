@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	defaultStatePath   = "/opt/dsc/var/dscd/state.json"
-	defaultPortFile    = "/opt/dsc/var/dscd/ports.json"
+	defaultStatePath   = "/var/lib/dscd/state.json"
+	defaultPortFile    = "/var/lib/dscd/ports.json"
 	defaultActivityLog = domain.DefaultActivityLogPath
 )
 
