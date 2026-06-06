@@ -59,7 +59,7 @@ func appendEvent(inst *WorkspaceInstance, event WorkspaceEvent, detail string) {
 		Detail:    detail,
 	})
 	var resolver WorkspaceStatusResolver
-	inst.Status = resolver.Resolve(inst.Events)
+	inst.Status = resolver.ResolveTyped(inst.Events)
 }
 
 // appendIDEEvent appends an IDE event record to an IDEInstance and re-projects
@@ -71,7 +71,7 @@ func appendIDEEvent(ide *IDEInstance, event IDEEvent, detail string) {
 		Detail:    detail,
 	})
 	var resolver IDEStatusResolver
-	ide.Status = resolver.Resolve(ide.Events)
+	ide.Status = resolver.ResolveTyped(ide.Events)
 }
 
 // DisplayStatus returns a human-readable status string derived from Status.

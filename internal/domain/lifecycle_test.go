@@ -6,16 +6,16 @@ import (
 	"time"
 )
 
-// --- WorkspaceStatusResolver tests ---
+// --- WorkspaceStatusResolver backward-compat tests (ResolveTyped) ---
 
 func TestWorkspaceStatusResolver_EmptyEvents(t *testing.T) {
 	var r WorkspaceStatusResolver
-	got := r.Resolve(nil)
+	got := r.ResolveTyped(nil)
 	if got != StatusPending {
 		t.Errorf("expected %q, got %q", StatusPending, got)
 	}
 
-	got = r.Resolve([]WorkspaceEventRecord{})
+	got = r.ResolveTyped([]WorkspaceEventRecord{})
 	if got != StatusPending {
 		t.Errorf("expected %q for empty slice, got %q", StatusPending, got)
 	}
@@ -32,7 +32,7 @@ func TestWorkspaceStatusResolver_InProgress(t *testing.T) {
 		events := []WorkspaceEventRecord{
 			{Event: evt, Timestamp: time.Now()},
 		}
-		got := r.Resolve(events)
+		got := r.ResolveTyped(events)
 		if got != StatusProvisioning {
 			t.Errorf("event %q: expected %q, got %q", evt, StatusProvisioning, got)
 		}
@@ -47,7 +47,7 @@ func TestWorkspaceStatusResolver_Ready(t *testing.T) {
 		{Event: EventWorktreeCreating, Timestamp: time.Now()},
 		{Event: EventWorktreeCreated, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusReady {
 		t.Errorf("expected %q, got %q", StatusReady, got)
 	}
@@ -59,7 +59,7 @@ func TestWorkspaceStatusResolver_Failed(t *testing.T) {
 		{Event: EventCloneStarted, Timestamp: time.Now()},
 		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone timed out"},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusFailed {
 		t.Errorf("expected %q, got %q", StatusFailed, got)
 	}
@@ -83,7 +83,7 @@ func TestWorkspaceStatusResolver_IgnoresHydrateEvents(t *testing.T) {
 	for _, he := range hydrateEvents {
 		events := append([]WorkspaceEventRecord{}, baseEvents...)
 		events = append(events, WorkspaceEventRecord{Event: he, Timestamp: time.Now()})
-		got := r.Resolve(events)
+		got := r.ResolveTyped(events)
 		if got != StatusReady {
 			t.Errorf("after %q: expected %q, got %q", he, StatusReady, got)
 		}
@@ -97,7 +97,7 @@ func TestWorkspaceStatusResolver_HydrateAfterFailed(t *testing.T) {
 		{Event: EventProvisionFailed, Timestamp: time.Now(), Detail: "clone error"},
 		{Event: EventHydrateSkipped, Timestamp: time.Now(), Detail: "fetch failed"},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusFailed {
 		t.Errorf("expected %q, got %q", StatusFailed, got)
 	}
@@ -109,7 +109,7 @@ func TestWorkspaceStatusResolver_OnlyHydrateEvents(t *testing.T) {
 		{Event: EventHydrateStarted, Timestamp: time.Now()},
 		{Event: EventHydrateCompleted, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusPending {
 		t.Errorf("expected %q for only-hydrate events, got %q", StatusPending, got)
 	}
@@ -123,34 +123,33 @@ func TestWorkspaceStatusResolver_MixedInfoEvents(t *testing.T) {
 		{Event: EventHydrateCompleted, Timestamp: time.Now()},
 		{Event: EventHydrateSkipped, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusReady {
 		t.Errorf("expected %q, got %q", StatusReady, got)
 	}
 }
-
 
 func TestWorkspaceStatusResolver_CloneDetected(t *testing.T) {
 	var r WorkspaceStatusResolver
 	events := []WorkspaceEventRecord{
 		{Event: EventCloneDetected, Timestamp: time.Now(), Detail: "detected by sync"},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusReady {
 		t.Errorf("expected %q, got %q", StatusReady, got)
 	}
 }
 
-// --- IDEStatusResolver tests ---
+// --- IDEStatusResolver backward-compat tests (ResolveTyped) ---
 
 func TestIDEStatusResolver_EmptyEvents(t *testing.T) {
 	var r IDEStatusResolver
-	got := r.Resolve(nil)
+	got := r.ResolveTyped(nil)
 	if got != StatusPending {
 		t.Errorf("expected %q, got %q", StatusPending, got)
 	}
 
-	got = r.Resolve([]IDEEventRecord{})
+	got = r.ResolveTyped([]IDEEventRecord{})
 	if got != StatusPending {
 		t.Errorf("expected %q for empty slice, got %q", StatusPending, got)
 	}
@@ -161,7 +160,7 @@ func TestIDEStatusResolver_Started(t *testing.T) {
 	events := []IDEEventRecord{
 		{Event: IDEEventStarted, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusProvisioning {
 		t.Errorf("expected %q, got %q", StatusProvisioning, got)
 	}
@@ -173,7 +172,7 @@ func TestIDEStatusResolver_Ready(t *testing.T) {
 		{Event: IDEEventStarted, Timestamp: time.Now()},
 		{Event: IDEEventReady, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusReady {
 		t.Errorf("expected %q, got %q", StatusReady, got)
 	}
@@ -185,7 +184,7 @@ func TestIDEStatusResolver_Failed(t *testing.T) {
 		{Event: IDEEventStarted, Timestamp: time.Now()},
 		{Event: IDEEventFailed, Timestamp: time.Now(), Detail: "systemd error"},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusFailed {
 		t.Errorf("expected %q, got %q", StatusFailed, got)
 	}
@@ -198,7 +197,7 @@ func TestIDEStatusResolver_Stopped(t *testing.T) {
 		{Event: IDEEventReady, Timestamp: time.Now()},
 		{Event: IDEEventStopped, Timestamp: time.Now()},
 	}
-	got := r.Resolve(events)
+	got := r.ResolveTyped(events)
 	if got != StatusPending {
 		t.Errorf("expected %q after stop, got %q", StatusPending, got)
 	}
@@ -359,9 +358,9 @@ func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
 // --- StatusResolver interface compile-time checks ---
 
 func TestWorkspaceStatusResolver_ImplementsInterface(t *testing.T) {
-	var _ StatusResolver[WorkspaceEventRecord] = WorkspaceStatusResolver{}
+	var _ StatusResolver[EventRecord] = WorkspaceStatusResolver{}
 }
 
 func TestIDEStatusResolver_ImplementsInterface(t *testing.T) {
-	var _ StatusResolver[IDEEventRecord] = IDEStatusResolver{}
+	var _ StatusResolver[EventRecord] = IDEStatusResolver{}
 }
