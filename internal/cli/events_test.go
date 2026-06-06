@@ -198,6 +198,7 @@ func TestEvents_JSONOutput(t *testing.T) {
 }
 
 func TestEvents_EmptyLog_NoError(t *testing.T) {
+	jsonOutput = false
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.log")
 
@@ -233,6 +234,7 @@ func TestEvents_EmptyLog_JSON(t *testing.T) {
 }
 
 func TestEvents_LinesLimit(t *testing.T) {
+	jsonOutput = false
 	events := testEvents() // 6 events
 	path := seedActivityLog(t, events)
 
@@ -254,6 +256,7 @@ func TestEvents_LinesLimit(t *testing.T) {
 }
 
 func TestEvents_ScopeAndKindMutuallyExclusive(t *testing.T) {
+	jsonOutput = false
 	dir := t.TempDir()
 	path := filepath.Join(dir, "activity.log")
 
@@ -264,6 +267,7 @@ func TestEvents_ScopeAndKindMutuallyExclusive(t *testing.T) {
 }
 
 func TestEvents_InvalidScopeFormat(t *testing.T) {
+	jsonOutput = false
 	dir := t.TempDir()
 	path := filepath.Join(dir, "activity.log")
 
@@ -274,6 +278,7 @@ func TestEvents_InvalidScopeFormat(t *testing.T) {
 }
 
 func TestEvents_InvalidSinceDuration(t *testing.T) {
+	jsonOutput = false
 	dir := t.TempDir()
 	path := filepath.Join(dir, "activity.log")
 
