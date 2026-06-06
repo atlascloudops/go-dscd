@@ -6,38 +6,38 @@ import (
 	"testing"
 )
 
-func TestCredentialFingerprint(t *testing.T) {
+func TestGitCredentialFingerprint(t *testing.T) {
 	// Verify deterministic truncated SHA-256 output matching Python:
 	//   hashlib.sha256(b"https://jperez:ghp_abc123@github.com").hexdigest()[:16]
-	fp := CredentialFingerprint("jperez", "ghp_abc123", "github.com")
+	fp := GitCredentialFingerprint("jperez", "ghp_abc123", "github.com")
 	if len(fp) != 16 {
 		t.Fatalf("expected 16-char fingerprint, got %d: %s", len(fp), fp)
 	}
 
 	// Same inputs must produce same output (determinism)
-	fp2 := CredentialFingerprint("jperez", "ghp_abc123", "github.com")
+	fp2 := GitCredentialFingerprint("jperez", "ghp_abc123", "github.com")
 	if fp != fp2 {
 		t.Fatalf("fingerprint not deterministic: %s != %s", fp, fp2)
 	}
 
 	// Different inputs must produce different output
-	fp3 := CredentialFingerprint("jperez", "ghp_different", "github.com")
+	fp3 := GitCredentialFingerprint("jperez", "ghp_different", "github.com")
 	if fp == fp3 {
 		t.Fatal("different tokens produced same fingerprint")
 	}
 
 	// Different hosts must produce different output
-	fp4 := CredentialFingerprint("jperez", "ghp_abc123", "gitlab.com")
+	fp4 := GitCredentialFingerprint("jperez", "ghp_abc123", "gitlab.com")
 	if fp == fp4 {
 		t.Fatal("different hosts produced same fingerprint")
 	}
 }
 
-func TestCredentialEntryLine(t *testing.T) {
-	e := CredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"}
+func TestGitCredentialEntryLine(t *testing.T) {
+	e := GitCredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"}
 	want := "https://jperez:ghp_abc123@github.com"
-	if got := e.CredentialLine(); got != want {
-		t.Fatalf("CredentialLine() = %q, want %q", got, want)
+	if got := e.GitCredentialLine(); got != want {
+		t.Fatalf("GitCredentialLine() = %q, want %q", got, want)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestParseCredentialLine(t *testing.T) {
 	}
 }
 
-func TestParseCredentialFileNotExist(t *testing.T) {
-	result, err := ParseCredentialFile("/nonexistent/path/to/credentials")
+func TestParseGitCredentialFileNotExist(t *testing.T) {
+	result, err := ParseGitCredentialFile("/nonexistent/path/to/credentials")
 	if err != nil {
 		t.Fatalf("expected nil error for missing file, got: %v", err)
 	}
@@ -78,17 +78,17 @@ func TestParseCredentialFileNotExist(t *testing.T) {
 	}
 }
 
-func TestParseCredentialFileRoundTrip(t *testing.T) {
+func TestParseGitCredentialFileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "git-credentials")
 
-	entries := []CredentialEntry{
+	entries := []GitCredentialEntry{
 		{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"},
 		{Host: "gitlab.com", AuthUser: "jperez", Token: "glpat_xyz789"},
 	}
 
-	if err := WriteCredentialFile(path, entries); err != nil {
-		t.Fatalf("WriteCredentialFile: %v", err)
+	if err := WriteGitCredentialFile(path, entries); err != nil {
+		t.Fatalf("WriteGitCredentialFile: %v", err)
 	}
 
 	// Verify file permissions
@@ -101,9 +101,9 @@ func TestParseCredentialFileRoundTrip(t *testing.T) {
 	}
 
 	// Parse and verify fingerprints
-	result, err := ParseCredentialFile(path)
+	result, err := ParseGitCredentialFile(path)
 	if err != nil {
-		t.Fatalf("ParseCredentialFile: %v", err)
+		t.Fatalf("ParseGitCredentialFile: %v", err)
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
@@ -114,24 +114,24 @@ func TestParseCredentialFileRoundTrip(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing host %s in result", e.Host)
 		}
-		expected := CredentialFingerprint(e.AuthUser, e.Token, e.Host)
+		expected := GitCredentialFingerprint(e.AuthUser, e.Token, e.Host)
 		if fp != expected {
 			t.Fatalf("fingerprint mismatch for %s: %s != %s", e.Host, fp, expected)
 		}
 	}
 }
 
-func TestUpsertCredentialsNewFile(t *testing.T) {
+func TestUpsertGitCredentialsNewFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "git-credentials")
 
-	entries := []CredentialEntry{
+	entries := []GitCredentialEntry{
 		{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"},
 	}
 
-	updated, added, err := UpsertCredentials(path, entries)
+	updated, added, err := UpsertGitCredentials(path, entries)
 	if err != nil {
-		t.Fatalf("UpsertCredentials: %v", err)
+		t.Fatalf("UpsertGitCredentials: %v", err)
 	}
 	if len(updated) != 0 {
 		t.Fatalf("expected no updates, got %v", updated)
@@ -141,22 +141,22 @@ func TestUpsertCredentialsNewFile(t *testing.T) {
 	}
 }
 
-func TestUpsertCredentialsIdempotent(t *testing.T) {
+func TestUpsertGitCredentialsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "git-credentials")
 
-	entry := CredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"}
+	entry := GitCredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"}
 
 	// Write initial
-	if err := WriteCredentialFile(path, []CredentialEntry{entry}); err != nil {
+	if err := WriteGitCredentialFile(path, []GitCredentialEntry{entry}); err != nil {
 		t.Fatalf("initial write: %v", err)
 	}
 
 	// Upsert same entry with new token
-	newEntry := CredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_new_token"}
-	updated, added, err := UpsertCredentials(path, []CredentialEntry{newEntry})
+	newEntry := GitCredentialEntry{Host: "github.com", AuthUser: "jperez", Token: "ghp_new_token"}
+	updated, added, err := UpsertGitCredentials(path, []GitCredentialEntry{newEntry})
 	if err != nil {
-		t.Fatalf("UpsertCredentials: %v", err)
+		t.Fatalf("UpsertGitCredentials: %v", err)
 	}
 	if len(updated) != 1 || updated[0] != "github.com" {
 		t.Fatalf("expected [github.com] updated, got %v", updated)
@@ -166,39 +166,39 @@ func TestUpsertCredentialsIdempotent(t *testing.T) {
 	}
 
 	// Read back and verify single line with new token
-	result, err := ParseCredentialFile(path)
+	result, err := ParseGitCredentialFile(path)
 	if err != nil {
-		t.Fatalf("ParseCredentialFile: %v", err)
+		t.Fatalf("ParseGitCredentialFile: %v", err)
 	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry after idempotent upsert, got %d", len(result))
 	}
-	expectedFP := CredentialFingerprint("jperez", "ghp_new_token", "github.com")
+	expectedFP := GitCredentialFingerprint("jperez", "ghp_new_token", "github.com")
 	if result["github.com"] != expectedFP {
 		t.Fatalf("fingerprint should reflect new token")
 	}
 }
 
-func TestUpsertCredentialsMerge(t *testing.T) {
+func TestUpsertGitCredentialsMerge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "git-credentials")
 
 	// Write initial with github
-	initial := []CredentialEntry{
+	initial := []GitCredentialEntry{
 		{Host: "github.com", AuthUser: "jperez", Token: "ghp_abc123"},
 	}
-	if err := WriteCredentialFile(path, initial); err != nil {
+	if err := WriteGitCredentialFile(path, initial); err != nil {
 		t.Fatalf("initial write: %v", err)
 	}
 
 	// Upsert: update github, add gitlab
-	newEntries := []CredentialEntry{
+	newEntries := []GitCredentialEntry{
 		{Host: "github.com", AuthUser: "jperez", Token: "ghp_rotated"},
 		{Host: "gitlab.com", AuthUser: "jperez", Token: "glpat_new"},
 	}
-	updated, added, err := UpsertCredentials(path, newEntries)
+	updated, added, err := UpsertGitCredentials(path, newEntries)
 	if err != nil {
-		t.Fatalf("UpsertCredentials: %v", err)
+		t.Fatalf("UpsertGitCredentials: %v", err)
 	}
 	if len(updated) != 1 || updated[0] != "github.com" {
 		t.Fatalf("expected [github.com] updated, got %v", updated)
@@ -208,26 +208,26 @@ func TestUpsertCredentialsMerge(t *testing.T) {
 	}
 
 	// Verify final state
-	result, err := ParseCredentialFile(path)
+	result, err := ParseGitCredentialFile(path)
 	if err != nil {
-		t.Fatalf("ParseCredentialFile: %v", err)
+		t.Fatalf("ParseGitCredentialFile: %v", err)
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result))
 	}
 }
 
-func TestWriteCredentialFileEmptyEntries(t *testing.T) {
+func TestWriteGitCredentialFileEmptyEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "git-credentials")
 
-	if err := WriteCredentialFile(path, []CredentialEntry{}); err != nil {
-		t.Fatalf("WriteCredentialFile with empty entries: %v", err)
+	if err := WriteGitCredentialFile(path, []GitCredentialEntry{}); err != nil {
+		t.Fatalf("WriteGitCredentialFile with empty entries: %v", err)
 	}
 
-	result, err := ParseCredentialFile(path)
+	result, err := ParseGitCredentialFile(path)
 	if err != nil {
-		t.Fatalf("ParseCredentialFile: %v", err)
+		t.Fatalf("ParseGitCredentialFile: %v", err)
 	}
 	if len(result) != 0 {
 		t.Fatalf("expected 0 entries, got %d", len(result))

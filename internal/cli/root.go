@@ -68,17 +68,45 @@ func NewRootCommand(version string) *cobra.Command {
 
 	credentials := &cobra.Command{
 		Use:   "credentials",
+		Short: "Manage pod credentials",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	gitCreds := &cobra.Command{
+		Use:   "git",
 		Short: "Manage git credentials",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
 	}
-	credentials.AddCommand(
-		newCredentialsListCmd(),
-		newCredentialsWriteCmd(),
+	gitCreds.AddCommand(
+		newCredentialsGitListCmd(),
+		newCredentialsGitWriteCmd(),
 	)
+	ssoCreds := &cobra.Command{
+		Use:   "sso",
+		Short: "Manage SSO credentials",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	ssoCreds.AddCommand(
+		newCredentialsSsoStatusCmd(),
+		newCredentialsSsoWriteCmd(),
+	)
+	credentials.AddCommand(gitCreds, ssoCreds)
 
-	root.AddCommand(workspace, credentials, newStatusCmd(fs, version, &statePath))
+	shell := &cobra.Command{
+		Use:   "shell",
+		Short: "Manage shell environment hooks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	shell.AddCommand(newShellInstallCmd())
+
+	root.AddCommand(workspace, credentials, shell, newStatusCmd(fs, version, &statePath))
 	return root
 }
 
