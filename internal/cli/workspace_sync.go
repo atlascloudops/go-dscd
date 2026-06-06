@@ -5,12 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceSyncCmd(store domain.StateStore, logDir string) *cobra.Command {
+func newWorkspaceSyncCmd(store domain.StateStore, al *domain.ActivityLog) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync",
 		Short: "Sync workspace state with filesystem reality",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			syncer := domain.NewSyncer(store, logDir).WithIDE(
+			syncer := domain.NewSyncer(store, al).WithIDE(
 				domain.NewCodeServerAdapter(),
 				domain.NewPortAllocator(defaultPortFile),
 			)

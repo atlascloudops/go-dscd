@@ -15,13 +15,13 @@ type SyncReport struct {
 
 type WorkspaceSyncer struct {
 	store         StateStore
-	logDir        string
+	activityLog   *ActivityLog
 	ideAdapter    IDEAdapter
 	portAllocator *PortAllocator
 }
 
-func NewSyncer(store StateStore, logDir string) *WorkspaceSyncer {
-	return &WorkspaceSyncer{store: store, logDir: logDir}
+func NewSyncer(store StateStore, activityLog *ActivityLog) *WorkspaceSyncer {
+	return &WorkspaceSyncer{store: store, activityLog: activityLog}
 }
 
 // WithIDE configures the syncer to health-check IDE instances during sync.
@@ -56,12 +56,14 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				if inst.Status == StatusPending || inst.Status == StatusFailed {
 					// Workspace appeared on disk — emit synthetic worktree_created
 					inst.RecordEvent(EventCloneDetected, "detected by sync")
+					s.appendToActivityLog(inst.Events[len(inst.Events)-1])
 					inst.LastError = nil
 				}
 			} else {
 				if inst.Status == StatusReady {
 					msg := "worktree missing from disk"
 					inst.RecordEvent(EventProvisionFailed, msg)
+					s.appendToActivityLog(inst.Events[len(inst.Events)-1])
 					inst.LastError = &msg
 				}
 			}
@@ -85,7 +87,7 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				err := s.ideAdapter.HealthCheck(ctx)
 				if err != nil && wasReady {
 					inst.IDE.RecordEvent(IDEEventStopped, "health check failed")
-					s.writeLog(name, "sync", "IDE became inactive")
+					s.appendToActivityLog(inst.IDE.Events[len(inst.IDE.Events)-1])
 				}
 			}
 
@@ -94,9 +96,6 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 			if inst.Status != oldLifecycle {
 				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, inst.Status)
 				report.LifecycleChanges = append(report.LifecycleChanges, change)
-				s.writeLog(name, "sync", "%s", change)
-			} else {
-				s.writeLog(name, "sync", "Clone exists=%t, lifecycle confirmed: %s", cloneExists, inst.Status)
 			}
 		}
 
@@ -104,18 +103,11 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 	})
 }
 
-func (s *WorkspaceSyncer) writeLog(name, phase, format string, args ...interface{}) {
-	if s.logDir == "" {
+// appendToActivityLog writes an event record to the activity log if configured.
+func (s *WorkspaceSyncer) appendToActivityLog(record EventRecord) {
+	if s.activityLog == nil {
 		return
 	}
-	os.MkdirAll(s.logDir, 0755)
-	logPath := filepath.Join(s.logDir, name+".log")
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	msg := fmt.Sprintf(format, args...)
-	ts := time.Now().UTC().Format(time.RFC3339)
-	fmt.Fprintf(f, "[%s] [%s] %s\n", ts, phase, msg)
+	// Best-effort: activity log write failures are non-fatal for sync.
+	_ = s.activityLog.Append(record)
 }

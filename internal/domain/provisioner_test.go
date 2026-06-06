@@ -886,7 +886,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 
 	// --- Step 17: Sync detects corrupted lifecycle ---
 	store.instances["ocr-service"].Status = StatusPending // manually corrupt
-	syncer := NewSyncer(store, filepath.Join(dir, "logs"))
+	syncer := NewSyncer(store, nil)
 	report, err := syncer.Sync()
 	if err != nil {
 		t.Fatalf("step 17: sync failed: %v", err)

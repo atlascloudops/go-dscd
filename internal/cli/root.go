@@ -56,10 +56,9 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 
 	// Lazy init activity log so flags are parsed first
-	activityLogFactory := func() *domain.ActivityLog {
+	al := &lazyActivityLog{factory: func() *domain.ActivityLog {
 		return domain.NewActivityLog(activityLogPath)
-	}
-	_ = activityLogFactory // wired to subcommands by the integration-hook story
+	}}
 
 	// We need to add commands after flag parsing, so use PersistentPreRun
 	// Actually cobra parses flags before RunE, so factory works fine
@@ -71,7 +70,7 @@ func NewRootCommand(version string) *cobra.Command {
 		newWorkspacePruneCmd(fs, logDir),
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
-		newWorkspaceSyncCmd(fs, logDir),
+		newWorkspaceSyncCmd(fs, al.get()),
 		newWorkspaceLogsCmd(fs, logDir),
 	)
 
@@ -91,7 +90,7 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 	gitCreds.AddCommand(
 		newCredentialsGitListCmd(),
-		newCredentialsGitWriteCmd(fs),
+		newCredentialsGitWriteCmd(fs, al.get()),
 	)
 	ssoCreds := &cobra.Command{
 		Use:   "sso",
@@ -102,7 +101,7 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 	ssoCreds.AddCommand(
 		newCredentialsSsoStatusCmd(),
-		newCredentialsSsoWriteCmd(fs),
+		newCredentialsSsoWriteCmd(fs, al.get()),
 	)
 	credentials.AddCommand(gitCreds, ssoCreds)
 
@@ -115,8 +114,29 @@ func NewRootCommand(version string) *cobra.Command {
 	}
 	shell.AddCommand(newShellInstallCmd())
 
-	root.AddCommand(workspace, credentials, shell, newStatusCmd(fs, version, &statePath))
+	root.AddCommand(
+		workspace,
+		credentials,
+		shell,
+		newStatusCmd(fs, version, &statePath),
+		newEventsCmd(func() *domain.ActivityLog {
+			return domain.NewActivityLog(activityLogPath)
+		}, &activityLogPath),
+	)
 	return root
+}
+
+// lazyActivityLog wraps ActivityLog creation so flag values are resolved at call time.
+type lazyActivityLog struct {
+	factory func() *domain.ActivityLog
+	inst    *domain.ActivityLog
+}
+
+func (l *lazyActivityLog) get() *domain.ActivityLog {
+	if l.inst == nil {
+		l.inst = l.factory()
+	}
+	return l.inst
 }
 
 // lazyStore wraps store creation so flag values are resolved at call time, not registration time

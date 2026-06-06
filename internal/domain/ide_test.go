@@ -729,7 +729,7 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 		},
 	}
 
-	s := NewSyncer(store, filepath.Join(dir, "logs")).WithIDE(adapter, nil)
+	s := NewSyncer(store, nil).WithIDE(adapter, nil)
 	_, err := s.Sync()
 	if err != nil {
 		t.Fatal(err)
@@ -763,7 +763,7 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 		},
 	}
 
-	s := NewSyncer(store, filepath.Join(dir, "logs")).WithIDE(adapter, nil)
+	s := NewSyncer(store, nil).WithIDE(adapter, nil)
 	_, err := s.Sync()
 	if err != nil {
 		t.Fatal(err)
