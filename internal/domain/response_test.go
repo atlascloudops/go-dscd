@@ -138,7 +138,7 @@ func TestIDEInfo_JSON(t *testing.T) {
 
 func TestWorkspaceInspectData_IDEInfoOmittedWhenNil(t *testing.T) {
 	inspect := WorkspaceInspectData{
-		WorkspaceInstance: WorkspaceInstance{Status: StatusReady},
+		Workspace: Workspace{Status: StatusReady},
 		BareRoot:         "/tmp/.bare",
 		WorktreeCount:    1,
 		Worktrees:        []string{"/tmp/default"},
@@ -154,7 +154,7 @@ func TestWorkspaceInspectData_IDEInfoOmittedWhenNil(t *testing.T) {
 
 func TestWorkspaceInspectData_IDEInfoPresent(t *testing.T) {
 	inspect := WorkspaceInspectData{
-		WorkspaceInstance: WorkspaceInstance{Status: StatusReady},
+		Workspace: Workspace{Status: StatusReady},
 		BareRoot:         "/tmp/.bare",
 		WorktreeCount:    1,
 		Worktrees:        []string{"/tmp/default"},
@@ -205,7 +205,7 @@ func TestIDEInfoFromInstance_EmptyStatus(t *testing.T) {
 }
 
 func TestWorkspaceListItemFromInstance_NoIDE(t *testing.T) {
-	inst := &WorkspaceInstance{
+	inst := &Workspace{
 		Spec:   WorkspaceSpec{Name: "myrepo"},
 		Status: StatusReady,
 	}
@@ -222,7 +222,7 @@ func TestWorkspaceListItemFromInstance_NoIDE(t *testing.T) {
 }
 
 func TestWorkspaceListItemFromInstance_IDEReady(t *testing.T) {
-	inst := &WorkspaceInstance{
+	inst := &Workspace{
 		Spec:   WorkspaceSpec{Name: "myrepo"},
 		Status: StatusReady,
 		IDE: &IDEInstance{
@@ -243,7 +243,7 @@ func TestWorkspaceListItemFromInstance_IDEReady(t *testing.T) {
 }
 
 func TestWorkspaceListItemFromInstance_IDENotReady(t *testing.T) {
-	inst := &WorkspaceInstance{
+	inst := &Workspace{
 		Spec:   WorkspaceSpec{Name: "myrepo"},
 		Status: StatusReady,
 		IDE: &IDEInstance{

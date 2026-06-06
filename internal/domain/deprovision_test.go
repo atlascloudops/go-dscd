@@ -27,7 +27,7 @@ func TestDeprovision_NotFound(t *testing.T) {
 
 func TestDeprovision_CannotDeleteDefault(t *testing.T) {
 	store := newMemStore()
-	store.instances["myrepo"] = &WorkspaceInstance{
+	store.instances["myrepo"] = &Workspace{
 		Spec: WorkspaceSpec{
 			Name:         "myrepo",
 			IsDefault:    true,

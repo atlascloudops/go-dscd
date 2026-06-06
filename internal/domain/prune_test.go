@@ -27,7 +27,7 @@ func TestPrune_NotFound(t *testing.T) {
 
 func TestPrune_NoNonDefaultWorktrees(t *testing.T) {
 	store := newMemStore()
-	store.instances["myrepo"] = &WorkspaceInstance{
+	store.instances["myrepo"] = &Workspace{
 		Spec: WorkspaceSpec{
 			Name:         "myrepo",
 			IsDefault:    true,

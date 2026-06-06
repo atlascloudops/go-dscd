@@ -13,7 +13,7 @@ func TestSync_PendingWithClone(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusPending,
 	}
@@ -34,7 +34,7 @@ func TestSync_PendingWithClone(t *testing.T) {
 	}
 	// Should have emitted a clone_detected event
 	lastEvent := store.instances["ws1"].Events[len(store.instances["ws1"].Events)-1]
-	if lastEvent.Event != EventCloneDetected {
+	if lastEvent.Event != string(EventCloneDetected) {
 		t.Fatalf("expected clone_detected event, got %s", lastEvent.Event)
 	}
 }
@@ -44,7 +44,7 @@ func TestSync_ReadyWithoutClone(t *testing.T) {
 	projectRoot := filepath.Join(dir, "missing-repo")
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 	}
@@ -71,7 +71,7 @@ func TestSync_Idempotent(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 	}
@@ -95,7 +95,7 @@ func TestSync_SetsTimestamp(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 	}
@@ -120,7 +120,7 @@ func TestSync_PendingWithWorktreeGitFile(t *testing.T) {
 	os.WriteFile(filepath.Join(projectRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusPending,
 	}
@@ -146,7 +146,7 @@ func TestSync_ReadyWorktreeRemovedFromDisk(t *testing.T) {
 	projectRoot := filepath.Join(dir, "repo", ".worktrees", "gone")
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 	}
@@ -176,7 +176,7 @@ func TestSync_CloneDetectedEvent(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:      WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusFailed,
 	}
@@ -188,7 +188,7 @@ func TestSync_CloneDetectedEvent(t *testing.T) {
 		t.Fatalf("expected ready after clone detected, got %s", store.instances["ws1"].Status)
 	}
 	lastEvent := store.instances["ws1"].Events[len(store.instances["ws1"].Events)-1]
-	if lastEvent.Event != EventCloneDetected {
+	if lastEvent.Event != string(EventCloneDetected) {
 		t.Fatalf("expected clone_detected event, got %s", lastEvent.Event)
 	}
 	if lastEvent.Detail != "detected by sync" {

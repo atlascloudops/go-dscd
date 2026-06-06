@@ -55,13 +55,13 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				cloneExists = true
 				if inst.Status == StatusPending || inst.Status == StatusFailed {
 					// Workspace appeared on disk — emit synthetic worktree_created
-					appendEvent(inst, EventCloneDetected, "detected by sync")
+					inst.RecordEvent(EventCloneDetected, "detected by sync")
 					inst.LastError = nil
 				}
 			} else {
 				if inst.Status == StatusReady {
 					msg := "worktree missing from disk"
-					appendEvent(inst, EventProvisionFailed, msg)
+					inst.RecordEvent(EventProvisionFailed, msg)
 					inst.LastError = &msg
 				}
 			}
@@ -84,7 +84,7 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 				wasReady := inst.IDE.Status == StatusReady
 				err := s.ideAdapter.HealthCheck(ctx)
 				if err != nil && wasReady {
-					appendIDEEvent(inst.IDE, IDEEventStopped, "health check failed")
+					inst.IDE.RecordEvent(IDEEventStopped, "health check failed")
 					s.writeLog(name, "sync", "IDE became inactive")
 				}
 			}

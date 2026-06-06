@@ -263,14 +263,16 @@ func TestIDEEventRecord_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// --- WorkspaceInstance JSON tests ---
+// --- Workspace JSON tests ---
 
-func TestWorkspaceInstance_EventsJSON(t *testing.T) {
+func TestWorkspace_EventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
-	inst := WorkspaceInstance{
+	scope := EventScope{Kind: ScopeKindWorkspace, Name: "infra"}
+	inst := Workspace{
+		Spec:   WorkspaceSpec{Name: "infra"},
 		Status: StatusProvisioning,
-		Events: []WorkspaceEventRecord{
-			{Event: EventCloneStarted, Timestamp: ts},
+		Events: []EventRecord{
+			{Scope: scope, Event: string(EventCloneStarted), Timestamp: ts},
 		},
 	}
 
@@ -279,7 +281,7 @@ func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got WorkspaceInstance
+	var got Workspace
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -287,24 +289,29 @@ func TestWorkspaceInstance_EventsJSON(t *testing.T) {
 	if len(got.Events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(got.Events))
 	}
-	if got.Events[0].Event != EventCloneStarted {
+	if got.Events[0].Event != string(EventCloneStarted) {
 		t.Errorf("event: expected %q, got %q", EventCloneStarted, got.Events[0].Event)
+	}
+	if got.Events[0].Scope.Kind != ScopeKindWorkspace {
+		t.Errorf("scope.Kind: expected %q, got %q", ScopeKindWorkspace, got.Events[0].Scope.Kind)
 	}
 	if got.Status != StatusProvisioning {
 		t.Errorf("status: expected %q, got %q", StatusProvisioning, got.Status)
 	}
 }
 
-func TestWorkspaceInstance_IDEInstanceEventsJSON(t *testing.T) {
+func TestWorkspace_IDEInstanceEventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
-	inst := WorkspaceInstance{
+	scope := EventScope{Kind: ScopeKindIDE, Name: "infra"}
+	inst := Workspace{
 		Status: StatusReady,
 		IDE: &IDEInstance{
+			Name:    "infra",
 			Adapter: "openvscode-server",
 			Port:    9100,
-			Events: []IDEEventRecord{
-				{Event: IDEEventStarted, Timestamp: ts},
-				{Event: IDEEventReady, Timestamp: ts},
+			Events: []EventRecord{
+				{Scope: scope, Event: string(IDEEventStarted), Timestamp: ts},
+				{Scope: scope, Event: string(IDEEventReady), Timestamp: ts},
 			},
 			Status: StatusReady,
 		},
@@ -315,7 +322,7 @@ func TestWorkspaceInstance_IDEInstanceEventsJSON(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got WorkspaceInstance
+	var got Workspace
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -331,8 +338,8 @@ func TestWorkspaceInstance_IDEInstanceEventsJSON(t *testing.T) {
 	}
 }
 
-func TestWorkspaceInstance_EmptyEventsOmitted(t *testing.T) {
-	inst := WorkspaceInstance{}
+func TestWorkspace_EmptyEventsOmitted(t *testing.T) {
+	inst := Workspace{}
 
 	data, err := json.Marshal(inst)
 	if err != nil {
@@ -363,4 +370,166 @@ func TestWorkspaceStatusResolver_ImplementsInterface(t *testing.T) {
 
 func TestIDEStatusResolver_ImplementsInterface(t *testing.T) {
 	var _ StatusResolver[EventRecord] = IDEStatusResolver{}
+}
+
+// --- Workspace.RecordEvent tests ---
+
+func TestWorkspace_RecordEvent_AppendsWithCorrectScope(t *testing.T) {
+	w := &Workspace{
+		Spec: WorkspaceSpec{Name: "infra"},
+	}
+
+	w.RecordEvent(EventCloneStarted, "https://github.com/org/repo.git")
+
+	if len(w.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(w.Events))
+	}
+
+	ev := w.Events[0]
+	if ev.Scope.Kind != ScopeKindWorkspace {
+		t.Errorf("scope.Kind: expected %q, got %q", ScopeKindWorkspace, ev.Scope.Kind)
+	}
+	if ev.Scope.Name != "infra" {
+		t.Errorf("scope.Name: expected %q, got %q", "infra", ev.Scope.Name)
+	}
+	if ev.Event != string(EventCloneStarted) {
+		t.Errorf("event: expected %q, got %q", EventCloneStarted, ev.Event)
+	}
+	if ev.Detail != "https://github.com/org/repo.git" {
+		t.Errorf("detail: expected clone URL, got %q", ev.Detail)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("timestamp should not be zero")
+	}
+}
+
+func TestWorkspace_RecordEvent_ProjectsStatus(t *testing.T) {
+	w := &Workspace{
+		Spec: WorkspaceSpec{Name: "infra"},
+	}
+
+	w.RecordEvent(EventCloneStarted, "")
+	if w.Status != StatusProvisioning {
+		t.Errorf("after clone_started: expected %q, got %q", StatusProvisioning, w.Status)
+	}
+
+	w.RecordEvent(EventCloneCompleted, "")
+	if w.Status != StatusProvisioning {
+		t.Errorf("after clone_completed: expected %q, got %q", StatusProvisioning, w.Status)
+	}
+
+	w.RecordEvent(EventWorktreeCreated, "main")
+	if w.Status != StatusReady {
+		t.Errorf("after worktree_created: expected %q, got %q", StatusReady, w.Status)
+	}
+}
+
+func TestWorkspace_RecordEvent_FailedStatus(t *testing.T) {
+	w := &Workspace{
+		Spec: WorkspaceSpec{Name: "infra"},
+	}
+
+	w.RecordEvent(EventCloneStarted, "")
+	w.RecordEvent(EventProvisionFailed, "clone timed out")
+
+	if w.Status != StatusFailed {
+		t.Errorf("expected %q, got %q", StatusFailed, w.Status)
+	}
+	if len(w.Events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(w.Events))
+	}
+}
+
+func TestWorkspace_RecordEvent_MultipleEvents(t *testing.T) {
+	w := &Workspace{
+		Spec: WorkspaceSpec{Name: "infra/feat"},
+	}
+
+	w.RecordEvent(EventCloneStarted, "url")
+	w.RecordEvent(EventCloneCompleted, "")
+	w.RecordEvent(EventWorktreeCreating, "main")
+	w.RecordEvent(EventWorktreeCreated, "main")
+	w.RecordEvent(EventHydrateStarted, "")
+	w.RecordEvent(EventHydrateCompleted, "main")
+
+	if len(w.Events) != 6 {
+		t.Fatalf("expected 6 events, got %d", len(w.Events))
+	}
+	// All events should have the same scope
+	for i, ev := range w.Events {
+		if ev.Scope.Kind != ScopeKindWorkspace || ev.Scope.Name != "infra/feat" {
+			t.Errorf("event[%d] scope: expected workspace:infra/feat, got %s", i, ev.Scope.String())
+		}
+	}
+	// Status should be ready (hydrate events are informational)
+	if w.Status != StatusReady {
+		t.Errorf("expected %q, got %q", StatusReady, w.Status)
+	}
+}
+
+// --- Workspace backward-compatible JSON deserialization ---
+
+func TestWorkspace_UnmarshalJSON_OldFormat(t *testing.T) {
+	// Simulate old state.json with WorkspaceEventRecord format (no scope field)
+	oldJSON := `{
+		"spec": {"name": "infra", "vcs": {"host": "github.com", "repo": "org/repo", "branch": "main"}, "owner": "user"},
+		"events": [
+			{"event": "clone_started", "timestamp": "2026-05-21T10:00:00Z", "detail": "https://github.com/org/repo.git"},
+			{"event": "clone_completed", "timestamp": "2026-05-21T10:01:00Z"},
+			{"event": "worktree_created", "timestamp": "2026-05-21T10:02:00Z", "detail": "main"}
+		],
+		"status": "ready"
+	}`
+
+	var w Workspace
+	if err := json.Unmarshal([]byte(oldJSON), &w); err != nil {
+		t.Fatalf("unmarshal old format: %v", err)
+	}
+
+	if len(w.Events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(w.Events))
+	}
+
+	// Verify events were converted to EventRecord with workspace scope
+	for i, ev := range w.Events {
+		if ev.Scope.Kind != ScopeKindWorkspace {
+			t.Errorf("event[%d] scope.Kind: expected %q, got %q", i, ScopeKindWorkspace, ev.Scope.Kind)
+		}
+		if ev.Scope.Name != "infra" {
+			t.Errorf("event[%d] scope.Name: expected %q, got %q", i, "infra", ev.Scope.Name)
+		}
+	}
+
+	if w.Events[0].Event != string(EventCloneStarted) {
+		t.Errorf("event[0]: expected %q, got %q", EventCloneStarted, w.Events[0].Event)
+	}
+	if w.Events[0].Detail != "https://github.com/org/repo.git" {
+		t.Errorf("event[0] detail: expected clone URL, got %q", w.Events[0].Detail)
+	}
+}
+
+func TestWorkspace_UnmarshalJSON_NewFormat(t *testing.T) {
+	// New format with scope field
+	newJSON := `{
+		"spec": {"name": "infra", "vcs": {"host": "github.com", "repo": "org/repo", "branch": "main"}, "owner": "user"},
+		"events": [
+			{"scope": "workspace:infra", "event": "clone_started", "timestamp": "2026-05-21T10:00:00Z"}
+		],
+		"status": "provisioning"
+	}`
+
+	var w Workspace
+	if err := json.Unmarshal([]byte(newJSON), &w); err != nil {
+		t.Fatalf("unmarshal new format: %v", err)
+	}
+
+	if len(w.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(w.Events))
+	}
+	if w.Events[0].Scope.Kind != ScopeKindWorkspace {
+		t.Errorf("scope.Kind: expected %q, got %q", ScopeKindWorkspace, w.Events[0].Scope.Kind)
+	}
+	if w.Events[0].Scope.Name != "infra" {
+		t.Errorf("scope.Name: expected %q, got %q", "infra", w.Events[0].Scope.Name)
+	}
 }

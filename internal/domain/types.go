@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // WorkspaceSpec is the input definition — what the client asks for.
 type WorkspaceSpec struct {
@@ -39,43 +42,72 @@ type VCSTarget struct {
 	CloneURL string `json:"clone_url,omitempty"`
 }
 
-// WorkspaceInstance is the realized state — what actually exists on the pod.
-type WorkspaceInstance struct {
-	Spec            WorkspaceSpec          `json:"spec"`
-	Events          []WorkspaceEventRecord `json:"events,omitempty"`
-	Status          Status                 `json:"status,omitempty"`
-	IDE             *IDEInstance            `json:"ide,omitempty"`
-	HeadCommit      string                 `json:"head_commit,omitempty"`
-	ProvisionedAt   *time.Time             `json:"provisioned_at,omitempty"`
-	LastError       *string                `json:"last_error,omitempty"`
-	LastSyncedAt    *time.Time             `json:"last_synced_at,omitempty"`
+// Workspace is the realized state — what actually exists on the pod.
+// Formerly WorkspaceInstance; promoted to a proper aggregate with RecordEvent.
+type Workspace struct {
+	Spec          WorkspaceSpec `json:"spec"`
+	Events        []EventRecord `json:"events,omitempty"`
+	Status        Status        `json:"status,omitempty"`
+	IDE           *IDEInstance   `json:"ide,omitempty"`
+	HeadCommit    string        `json:"head_commit,omitempty"`
+	ProvisionedAt *time.Time    `json:"provisioned_at,omitempty"`
+	LastError     *string       `json:"last_error,omitempty"`
+	LastSyncedAt  *time.Time    `json:"last_synced_at,omitempty"`
 }
 
-// appendEvent appends a workspace event record and keeps Status in sync.
-func appendEvent(inst *WorkspaceInstance, event WorkspaceEvent, detail string) {
-	inst.Events = append(inst.Events, WorkspaceEventRecord{
-		Event:     event,
+// RecordEvent is the sole entry point for workspace event emission. It constructs
+// an EventRecord with the workspace's scope, appends it to the event stream, and
+// re-projects the workspace status.
+func (w *Workspace) RecordEvent(event WorkspaceEvent, detail string) {
+	scope := EventScope{Kind: ScopeKindWorkspace, Name: w.Spec.Name}
+	w.Events = append(w.Events, EventRecord{
+		Scope:     scope,
+		Event:     string(event),
 		Timestamp: time.Now().UTC(),
 		Detail:    detail,
 	})
 	var resolver WorkspaceStatusResolver
-	inst.Status = resolver.ResolveTyped(inst.Events)
+	w.Status = resolver.Resolve(w.Events)
 }
 
-// appendIDEEvent appends an IDE event record to an IDEInstance and re-projects
-// its Status via IDEStatusResolver.
-func appendIDEEvent(ide *IDEInstance, event IDEEvent, detail string) {
-	ide.Events = append(ide.Events, IDEEventRecord{
-		Event:     event,
-		Timestamp: time.Now().UTC(),
-		Detail:    detail,
-	})
-	var resolver IDEStatusResolver
-	ide.Status = resolver.ResolveTyped(ide.Events)
+// UnmarshalJSON handles backward-compatible deserialization of Workspace.
+// Old state files store events as WorkspaceEventRecord (no scope); new ones use
+// EventRecord (with scope). This method detects which format is present and
+// converts old-format events into EventRecord with a workspace scope derived
+// from the spec name.
+func (w *Workspace) UnmarshalJSON(data []byte) error {
+	// Alias avoids infinite recursion on UnmarshalJSON.
+	type Alias Workspace
+	type workspaceWithRawEvents struct {
+		Alias
+		RawEvents []json.RawMessage `json:"events,omitempty"`
+	}
+	var raw workspaceWithRawEvents
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*w = Workspace(raw.Alias)
+	w.Events = nil
+
+	for _, re := range raw.RawEvents {
+		// Try new EventRecord format first (has "scope" key).
+		var er EventRecord
+		if err := json.Unmarshal(re, &er); err == nil && er.Scope.Kind != "" {
+			w.Events = append(w.Events, er)
+			continue
+		}
+		// Fall back to old WorkspaceEventRecord format.
+		var old WorkspaceEventRecord
+		if err := json.Unmarshal(re, &old); err == nil && old.Event != "" {
+			w.Events = append(w.Events, old.ToEventRecord(w.Spec.Name))
+			continue
+		}
+	}
+	return nil
 }
 
 // DisplayStatus returns a human-readable status string derived from Status.
-func (w *WorkspaceInstance) DisplayStatus() string {
+func (w *Workspace) DisplayStatus() string {
 	switch w.Status {
 	case StatusFailed:
 		return "ERROR"
