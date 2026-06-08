@@ -23,7 +23,7 @@ func main() {
 	logLevel := root.PersistentFlags().Lookup("log-level")
 	level := parseSlogLevel(logLevel.Value.String())
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
 	})
 	logger := slog.New(handler).With("version", version)
