@@ -19,13 +19,30 @@ type IDEContext struct {
 }
 
 // IDEInstance is the persisted lifecycle object for an IDE attached to a workspace.
-// It carries its own event stream and projected status, mirroring the workspace
-// lifecycle pattern at the IDE level.
+// It is an aggregate with its own event stream and projected status. The Name
+// field carries the workspace name (e.g. "infra", "infra/feat") that the IDE is
+// attached to, used as scope identity for event stamping.
 type IDEInstance struct {
-	Adapter string           `json:"adapter"`
-	Port    int              `json:"port"`
-	Events  []IDEEventRecord `json:"events,omitempty"`
-	Status  Status           `json:"status,omitempty"`
+	Name    string        `json:"name"`
+	Adapter string        `json:"adapter"`
+	Port    int           `json:"port"`
+	Events  []EventRecord `json:"events,omitempty"`
+	Status  Status        `json:"status,omitempty"`
+}
+
+// RecordEvent appends an IDE event to the aggregate's event stream with the
+// correct scope (ide:<workspace-name>) and re-projects the status via
+// IDEStatusResolver. This is the sole entry point for IDE event emission.
+func (ide *IDEInstance) RecordEvent(event IDEEvent, detail string) {
+	scope := EventScope{Kind: ScopeKindIDE, Name: ide.Name}
+	ide.Events = append(ide.Events, EventRecord{
+		Scope:     scope,
+		Event:     string(event),
+		Timestamp: time.Now().UTC(),
+		Detail:    detail,
+	})
+	var resolver IDEStatusResolver
+	ide.Status = resolver.Resolve(ide.Events)
 }
 
 // IDEAdapter is the interface for managing an IDE process as an ephemeral
@@ -44,7 +61,7 @@ type IDEAdapter interface {
 
 // CodeServerAdapter manages an openvscode-server instance via systemd template units.
 type CodeServerAdapter struct {
-	// EnvDir is the directory for per-instance env files (default: /opt/dsc/var/dscd/ide/).
+	// EnvDir is the directory for per-instance env files (default: /var/lib/dscd/ide/).
 	EnvDir string
 	// SystemdRunner abstracts systemctl invocations for testability.
 	SystemdRunner SystemdRunner
@@ -113,7 +130,7 @@ func (d *defaultHTTPChecker) Check(url string) error {
 // NewCodeServerAdapter creates a CodeServerAdapter with production defaults.
 func NewCodeServerAdapter() *CodeServerAdapter {
 	return &CodeServerAdapter{
-		EnvDir:        "/opt/dsc/var/dscd/ide/",
+		EnvDir:        "/var/lib/dscd/ide/",
 		SystemdRunner: &defaultSystemdRunner{},
 		HTTPChecker:   &defaultHTTPChecker{},
 		PollTimeout:   5 * time.Second,

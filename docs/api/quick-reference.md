@@ -34,9 +34,8 @@ dscd workspace deprovision infra --all
 dscd workspace prune infra
 dscd --json workspace prune infra
 
-# Logs
-dscd workspace logs infra                       # last 50 lines
-dscd workspace logs --lines 100 infra           # last 100 lines
-dscd workspace logs --follow infra              # stream mode (Ctrl+C to exit)
-dscd workspace logs --lines 10 --follow infra   # last 10 + stream
+
+# Events (replaces workspace logs)
+dscd events                                     # all recent events
+dscd events --scope workspace:infra             # events for a specific workspace
 ```

@@ -240,12 +240,14 @@ func TestCodeServerAdapter_ImplementsInterface(t *testing.T) {
 }
 
 func TestIDEInstance_JSONRoundTrip(t *testing.T) {
+	scope := EventScope{Kind: ScopeKindIDE, Name: "infra"}
 	instance := IDEInstance{
+		Name:    "infra",
 		Adapter: "openvscode-server",
 		Port:    9100,
-		Events: []IDEEventRecord{
-			{Event: IDEEventStarted, Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
-			{Event: IDEEventReady, Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
+		Events: []EventRecord{
+			{Scope: scope, Event: string(IDEEventStarted), Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
+			{Scope: scope, Event: string(IDEEventReady), Timestamp: time.Now().UTC().Truncate(time.Second), Detail: "port=9100"},
 		},
 		Status: StatusReady,
 	}
@@ -260,6 +262,9 @@ func TestIDEInstance_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
+	if got.Name != instance.Name {
+		t.Errorf("name: expected %q, got %q", instance.Name, got.Name)
+	}
 	if got.Adapter != instance.Adapter {
 		t.Errorf("adapter: expected %q, got %q", instance.Adapter, got.Adapter)
 	}
@@ -269,20 +274,25 @@ func TestIDEInstance_JSONRoundTrip(t *testing.T) {
 	if len(got.Events) != 2 {
 		t.Fatalf("events: expected 2, got %d", len(got.Events))
 	}
+	if got.Events[0].Scope.Kind != ScopeKindIDE || got.Events[0].Scope.Name != "infra" {
+		t.Errorf("event scope: expected ide:infra, got %s", got.Events[0].Scope)
+	}
 	if got.Status != StatusReady {
 		t.Errorf("status: expected %q, got %q", StatusReady, got.Status)
 	}
 }
 
-func TestWorkspaceInstance_IDEInstanceJSON(t *testing.T) {
-	inst := WorkspaceInstance{
+func TestWorkspace_IDEInstanceJSON(t *testing.T) {
+	scope := EventScope{Kind: ScopeKindIDE, Name: "myrepo"}
+	inst := Workspace{
 		Status: StatusPending,
 		IDE: &IDEInstance{
+			Name:    "myrepo",
 			Adapter: "openvscode-server",
 			Port:    9100,
-			Events: []IDEEventRecord{
-				{Event: IDEEventStarted, Timestamp: time.Now().UTC().Truncate(time.Second)},
-				{Event: IDEEventReady, Timestamp: time.Now().UTC().Truncate(time.Second)},
+			Events: []EventRecord{
+				{Scope: scope, Event: string(IDEEventStarted), Timestamp: time.Now().UTC().Truncate(time.Second)},
+				{Scope: scope, Event: string(IDEEventReady), Timestamp: time.Now().UTC().Truncate(time.Second)},
 			},
 			Status: StatusReady,
 		},
@@ -293,13 +303,16 @@ func TestWorkspaceInstance_IDEInstanceJSON(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got WorkspaceInstance
+	var got Workspace
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
 	if got.IDE == nil {
 		t.Fatal("IDE should not be nil after round-trip")
+	}
+	if got.IDE.Name != "myrepo" {
+		t.Errorf("IDE.Name: expected myrepo, got %q", got.IDE.Name)
 	}
 	if got.IDE.Port != 9100 {
 		t.Errorf("IDE.Port: expected 9100, got %d", got.IDE.Port)
@@ -315,8 +328,8 @@ func TestWorkspaceInstance_IDEInstanceJSON(t *testing.T) {
 	}
 }
 
-func TestWorkspaceInstance_IDEInstanceOmittedWhenNil(t *testing.T) {
-	inst := WorkspaceInstance{
+func TestWorkspace_IDEInstanceOmittedWhenNil(t *testing.T) {
+	inst := Workspace{
 		Status: StatusPending,
 	}
 
@@ -332,6 +345,132 @@ func TestWorkspaceInstance_IDEInstanceOmittedWhenNil(t *testing.T) {
 
 	if _, ok := raw["ide"]; ok {
 		t.Error("expected ide to be omitted from JSON when nil")
+	}
+}
+
+// --- IDEInstance.RecordEvent Tests ---
+
+func TestIDEInstance_RecordEvent_AppendsWithCorrectScope(t *testing.T) {
+	ide := &IDEInstance{
+		Name:    "infra",
+		Adapter: "openvscode-server",
+		Port:    9100,
+	}
+
+	ide.RecordEvent(IDEEventStarted, "port=9100")
+
+	if len(ide.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(ide.Events))
+	}
+
+	ev := ide.Events[0]
+	if ev.Scope.Kind != ScopeKindIDE {
+		t.Errorf("scope kind: expected %q, got %q", ScopeKindIDE, ev.Scope.Kind)
+	}
+	if ev.Scope.Name != "infra" {
+		t.Errorf("scope name: expected %q, got %q", "infra", ev.Scope.Name)
+	}
+	if ev.Scope.String() != "ide:infra" {
+		t.Errorf("scope string: expected %q, got %q", "ide:infra", ev.Scope.String())
+	}
+	if ev.Event != string(IDEEventStarted) {
+		t.Errorf("event: expected %q, got %q", IDEEventStarted, ev.Event)
+	}
+	if ev.Detail != "port=9100" {
+		t.Errorf("detail: expected %q, got %q", "port=9100", ev.Detail)
+	}
+	if ev.Timestamp.IsZero() {
+		t.Error("expected non-zero timestamp")
+	}
+}
+
+func TestIDEInstance_RecordEvent_ProjectsStatus(t *testing.T) {
+	ide := &IDEInstance{
+		Name:    "infra",
+		Adapter: "openvscode-server",
+		Port:    9100,
+	}
+
+	// Started -> Provisioning
+	ide.RecordEvent(IDEEventStarted, "port=9100")
+	if ide.Status != StatusProvisioning {
+		t.Errorf("after started: expected %q, got %q", StatusProvisioning, ide.Status)
+	}
+
+	// Ready -> Ready
+	ide.RecordEvent(IDEEventReady, "port=9100")
+	if ide.Status != StatusReady {
+		t.Errorf("after ready: expected %q, got %q", StatusReady, ide.Status)
+	}
+
+	// Stopped -> Pending
+	ide.RecordEvent(IDEEventStopped, "port=9100")
+	if ide.Status != StatusPending {
+		t.Errorf("after stopped: expected %q, got %q", StatusPending, ide.Status)
+	}
+
+	if len(ide.Events) != 3 {
+		t.Errorf("expected 3 events, got %d", len(ide.Events))
+	}
+}
+
+func TestIDEInstance_RecordEvent_FailedStatus(t *testing.T) {
+	ide := &IDEInstance{
+		Name:    "infra/feat",
+		Adapter: "openvscode-server",
+		Port:    9100,
+	}
+
+	ide.RecordEvent(IDEEventStarted, "port=9100")
+	ide.RecordEvent(IDEEventFailed, "systemd error")
+
+	if ide.Status != StatusFailed {
+		t.Errorf("expected %q, got %q", StatusFailed, ide.Status)
+	}
+
+	// Scope should use workspace name with slash
+	if ide.Events[0].Scope.String() != "ide:infra/feat" {
+		t.Errorf("scope: expected %q, got %q", "ide:infra/feat", ide.Events[0].Scope.String())
+	}
+}
+
+func TestIDEInstance_RecordEvent_JSONRoundTrip(t *testing.T) {
+	ide := &IDEInstance{
+		Name:    "infra",
+		Adapter: "openvscode-server",
+		Port:    9100,
+	}
+
+	ide.RecordEvent(IDEEventStarted, "port=9100")
+	ide.RecordEvent(IDEEventReady, "port=9100")
+
+	data, err := json.Marshal(ide)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got IDEInstance
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.Name != "infra" {
+		t.Errorf("name: expected %q, got %q", "infra", got.Name)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events: expected 2, got %d", len(got.Events))
+	}
+	if got.Events[0].Scope.String() != "ide:infra" {
+		t.Errorf("scope: expected %q, got %q", "ide:infra", got.Events[0].Scope.String())
+	}
+	if got.Events[0].Event != string(IDEEventStarted) {
+		t.Errorf("event[0]: expected %q, got %q", IDEEventStarted, got.Events[0].Event)
+	}
+	if got.Events[1].Event != string(IDEEventReady) {
+		t.Errorf("event[1]: expected %q, got %q", IDEEventReady, got.Events[1].Event)
+	}
+	if got.Status != StatusReady {
+		t.Errorf("status: expected %q, got %q", StatusReady, got.Status)
 	}
 }
 
@@ -371,7 +510,7 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -398,10 +537,14 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 	// Should have emitted ide_started and ide_ready events in the IDE event stream
 	hasStarted, hasReady := false, false
 	for _, ev := range inst.IDE.Events {
-		if ev.Event == IDEEventStarted {
+		if ev.Event == string(IDEEventStarted) {
 			hasStarted = true
+			// Verify scope is stamped correctly
+			if ev.Scope.Kind != ScopeKindIDE || ev.Scope.Name != "myrepo" {
+				t.Errorf("expected scope ide:myrepo, got %s", ev.Scope)
+			}
 		}
-		if ev.Event == IDEEventReady {
+		if ev.Event == string(IDEEventReady) {
 			hasReady = true
 		}
 	}
@@ -410,6 +553,11 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 	}
 	if !hasReady {
 		t.Error("expected ide_ready event")
+	}
+
+	// IDE Name should be set to workspace name
+	if inst.IDE.Name != "myrepo" {
+		t.Errorf("expected IDE.Name %q, got %q", "myrepo", inst.IDE.Name)
 	}
 
 	// Workspace status should still be Ready (IDE events are in separate stream)
@@ -451,7 +599,7 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -472,7 +620,7 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	// Should have ide_failed event in the IDE event stream
 	hasFailed := false
 	for _, ev := range inst.IDE.Events {
-		if ev.Event == IDEEventFailed {
+		if ev.Event == string(IDEEventFailed) {
 			hasFailed = true
 		}
 	}
@@ -504,7 +652,7 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 		// IDE is nil — no IDE requested
 	}
 
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	inst, err := p.Provision(store, spec)
 	if err != nil {
@@ -541,7 +689,7 @@ func TestProvision_InvalidAdapterName(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: NewPortAllocator(filepath.Join(dir, "ports.json")),
 	}
@@ -570,17 +718,18 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 	}
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 		IDE: &IDEInstance{
+			Name:    "ws1",
 			Adapter: "openvscode-server",
 			Port:    9100,
 			Status:  StatusReady,
 		},
 	}
 
-	s := NewSyncer(store, filepath.Join(dir, "logs")).WithIDE(adapter, nil)
+	s := NewSyncer(store, nil).WithIDE(adapter, nil)
 	_, err := s.Sync()
 	if err != nil {
 		t.Fatal(err)
@@ -603,17 +752,18 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 	}
 
 	store := newMemStore()
-	store.instances["ws1"] = &WorkspaceInstance{
+	store.instances["ws1"] = &Workspace{
 		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
 		Status: StatusReady,
 		IDE: &IDEInstance{
+			Name:    "ws1",
 			Adapter: "openvscode-server",
 			Port:    9100,
 			Status:  StatusReady,
 		},
 	}
 
-	s := NewSyncer(store, filepath.Join(dir, "logs")).WithIDE(adapter, nil)
+	s := NewSyncer(store, nil).WithIDE(adapter, nil)
 	_, err := s.Sync()
 	if err != nil {
 		t.Fatal(err)
@@ -630,7 +780,7 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 		t.Fatal("expected IDE events")
 	}
 	lastIDEEvent := ideEvents[len(ideEvents)-1]
-	if lastIDEEvent.Event != IDEEventStopped {
+	if lastIDEEvent.Event != string(IDEEventStopped) {
 		t.Errorf("expected ide_stopped event, got %s", lastIDEEvent.Event)
 	}
 }
@@ -655,7 +805,7 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	pa.Allocate(key)
 
 	store := newMemStore()
-	store.instances["myrepo/feature"] = &WorkspaceInstance{
+	store.instances["myrepo/feature"] = &Workspace{
 		Spec: WorkspaceSpec{
 			Name:         "myrepo/feature",
 			IsDefault:    false,
@@ -667,6 +817,7 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 		},
 		Status: StatusReady,
 		IDE: &IDEInstance{
+			Name:    "myrepo/feature",
 			Adapter: "openvscode-server",
 			Port:    9100,
 			Status:  StatusReady,
@@ -674,7 +825,7 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -714,7 +865,8 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 	key := PortKey("user", "default")
 	pa.Allocate(key)
 
-	inst := &WorkspaceInstance{
+	ideScope := EventScope{Kind: ScopeKindIDE, Name: "myrepo"}
+	inst := &Workspace{
 		Spec: WorkspaceSpec{
 			Name:         "myrepo",
 			WorktreeName: "default",
@@ -723,18 +875,19 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 		},
 		Status: StatusReady,
 		IDE: &IDEInstance{
+			Name:    "myrepo",
 			Adapter: "openvscode-server",
 			Port:    9100,
-			Events: []IDEEventRecord{
-				{Event: IDEEventStarted, Timestamp: time.Now()},
-				{Event: IDEEventReady, Timestamp: time.Now()},
+			Events: []EventRecord{
+				{Scope: ideScope, Event: string(IDEEventStarted), Timestamp: time.Now()},
+				{Scope: ideScope, Event: string(IDEEventReady), Timestamp: time.Now()},
 			},
 			Status: StatusReady,
 		},
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -754,7 +907,7 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 	// Must have ide_stopped event in the trail
 	hasStopped := false
 	for _, ev := range inst.IDE.Events {
-		if ev.Event == IDEEventStopped {
+		if ev.Event == string(IDEEventStopped) {
 			hasStopped = true
 		}
 	}
@@ -800,7 +953,7 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	}
 
 	p := &Provisioner{
-		LogDir:        filepath.Join(dir, "logs"),
+		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
@@ -822,19 +975,19 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	if inst.IDE == nil {
 		t.Fatal("expected IDE instance to be set")
 	}
-	hasStarted, hasReady := false, false
+	hasStarted2, hasReady2 := false, false
 	for _, ev := range inst.IDE.Events {
-		if ev.Event == IDEEventStarted {
-			hasStarted = true
+		if ev.Event == string(IDEEventStarted) {
+			hasStarted2 = true
 		}
-		if ev.Event == IDEEventReady {
-			hasReady = true
+		if ev.Event == string(IDEEventReady) {
+			hasReady2 = true
 		}
 	}
-	if !hasStarted {
+	if !hasStarted2 {
 		t.Error("expected ide_started event in IDE event stream")
 	}
-	if !hasReady {
+	if !hasReady2 {
 		t.Error("expected ide_ready event in IDE event stream")
 	}
 }

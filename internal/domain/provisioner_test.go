@@ -9,20 +9,32 @@ import (
 )
 
 type memStore struct {
-	instances map[string]*WorkspaceInstance
+	instances map[string]*Workspace
 	locked    bool
 }
 
 func newMemStore() *memStore {
-	return &memStore{instances: make(map[string]*WorkspaceInstance)}
+	return &memStore{instances: make(map[string]*Workspace)}
 }
 
-func (m *memStore) Load() (map[string]*WorkspaceInstance, error) {
+func (m *memStore) Load() (map[string]*Workspace, error) {
 	return m.instances, nil
 }
 
-func (m *memStore) Save(instances map[string]*WorkspaceInstance) error {
+func (m *memStore) Save(instances map[string]*Workspace) error {
 	m.instances = instances
+	return nil
+}
+
+func (m *memStore) LoadState() (*DaemonState, error) {
+	return &DaemonState{
+		Workspaces:  m.instances,
+		Credentials: make(map[string]*CredentialState),
+	}, nil
+}
+
+func (m *memStore) SaveState(state *DaemonState) error {
+	m.instances = state.Workspaces
 	return nil
 }
 
@@ -335,7 +347,7 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "test",
@@ -376,7 +388,7 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	os.WriteFile(filepath.Join(projectRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "test/feature",
@@ -467,7 +479,7 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -533,7 +545,7 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Step 1: Provision default (bare clone + default worktree)
 	defaultSpec := WorkspaceSpec{
@@ -611,7 +623,7 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// AC: Non-default worktree requested before bare clone exists -> bare clone is created automatically
 	spec := WorkspaceSpec{
@@ -662,7 +674,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	experimentRoot := filepath.Join(repoRoot, ".worktrees", "experiment")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// --- Step 3: Provision first workspace (bare clone + default worktree) ---
 	defaultSpec := WorkspaceSpec{
@@ -874,7 +886,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 
 	// --- Step 17: Sync detects corrupted lifecycle ---
 	store.instances["ocr-service"].Status = StatusPending // manually corrupt
-	syncer := NewSyncer(store, filepath.Join(dir, "logs"))
+	syncer := NewSyncer(store, nil)
 	report, err := syncer.Sync()
 	if err != nil {
 		t.Fatalf("step 17: sync failed: %v", err)
@@ -929,7 +941,7 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -976,10 +988,10 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	hasHydrateStarted := false
 	hasHydrateCompleted := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateStarted {
+		if ev.Event == string(EventHydrateStarted) {
 			hasHydrateStarted = true
 		}
-		if ev.Event == EventHydrateCompleted {
+		if ev.Event == string(EventHydrateCompleted) {
 			hasHydrateCompleted = true
 		}
 	}
@@ -1004,7 +1016,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1041,7 +1053,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	// Verify hydrate_skipped event with "uncommitted changes" detail
 	hasSkipped := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "uncommitted changes") {
+		if ev.Event == string(EventHydrateSkipped) && strings.Contains(ev.Detail, "uncommitted changes") {
 			hasSkipped = true
 		}
 	}
@@ -1063,7 +1075,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1101,7 +1113,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	// Verify hydrate_skipped event with divergence detail
 	hasSkipped := false
 	for _, ev := range inst2.Events {
-		if ev.Event == EventHydrateSkipped && strings.Contains(ev.Detail, "diverged") {
+		if ev.Event == string(EventHydrateSkipped) && strings.Contains(ev.Detail, "diverged") {
 			hasSkipped = true
 		}
 	}
@@ -1125,7 +1137,7 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	// Provision default
 	defaultSpec := WorkspaceSpec{
@@ -1244,7 +1256,7 @@ func TestProvisionTemplate_BasicFlow(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1323,7 +1335,7 @@ func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1370,7 +1382,7 @@ func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	originURL := "https://github.com/org/my-project.git"
 	spec := WorkspaceSpec{
@@ -1414,7 +1426,7 @@ func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1456,7 +1468,7 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1491,14 +1503,14 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	}
 
 	for i, expected := range expectedEvents {
-		if inst.Events[i].Event != expected {
+		if inst.Events[i].Event != string(expected) {
 			t.Errorf("event[%d]: expected %s, got %s", i, expected, inst.Events[i].Event)
 		}
 	}
 
 	// Verify template_reinit_completed has the repo slug as detail
 	for _, ev := range inst.Events {
-		if ev.Event == EventTemplateReinitCompleted {
+		if ev.Event == string(EventTemplateReinitCompleted) {
 			if ev.Detail != "org/my-template" {
 				t.Errorf("expected template_reinit_completed detail to be 'org/my-template', got %q", ev.Detail)
 			}
@@ -1519,7 +1531,7 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1568,7 +1580,7 @@ func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "my-project",
@@ -1610,7 +1622,7 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
-	p := &Provisioner{LogDir: filepath.Join(dir, "logs")}
+	p := &Provisioner{}
 
 	spec := WorkspaceSpec{
 		Name:         "myrepo",
@@ -1687,26 +1699,231 @@ func TestValidateSpec_TemplateWithoutVCSCloneURL(t *testing.T) {
 
 func TestTemplateEvents_DoNotAffectStatus(t *testing.T) {
 	// AC: Template events are informational and do not change workspace status
-	inst := &WorkspaceInstance{}
-	appendEvent(inst, EventTemplateCloneStarted, "url")
+	inst := &Workspace{}
+	inst.RecordEvent(EventTemplateCloneStarted, "url")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_clone_started, got %s", inst.Status)
 	}
 
-	appendEvent(inst, EventTemplateCloneCompleted, "")
+	inst.RecordEvent(EventTemplateCloneCompleted, "")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_clone_completed, got %s", inst.Status)
 	}
 
-	appendEvent(inst, EventTemplateReinitCompleted, "org/tmpl")
+	inst.RecordEvent(EventTemplateReinitCompleted, "org/tmpl")
 	if inst.Status != StatusPending {
 		t.Fatalf("expected pending after template_reinit_completed, got %s", inst.Status)
 	}
 
 	// Once worktree_created fires, status becomes Ready
-	appendEvent(inst, EventWorktreeCreated, "main")
+	inst.RecordEvent(EventWorktreeCreated, "main")
 	if inst.Status != StatusReady {
 		t.Fatalf("expected ready after worktree_created, got %s", inst.Status)
+	}
+}
+
+// --- Activity log integration tests ---
+
+func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
+	dir := t.TempDir()
+	upstream := createUpstreamRepo(t, dir)
+	repoRoot := filepath.Join(dir, "ws")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	actLogPath := filepath.Join(dir, "activity.log")
+	actLog := NewActivityLog(actLogPath)
+
+	store := newMemStore()
+	p := &Provisioner{
+		ActivityLog: actLog,
+	}
+
+	spec := WorkspaceSpec{
+		Name:         "test",
+		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     filepath.Join(repoRoot, ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Workspace events should have workspace scope
+	for _, ev := range inst.Events {
+		if ev.Scope.Kind != ScopeKindWorkspace {
+			t.Errorf("expected workspace scope, got %s for event %s", ev.Scope.Kind, ev.Event)
+		}
+		if ev.Scope.Name != "test" {
+			t.Errorf("expected scope name 'test', got %s for event %s", ev.Scope.Name, ev.Event)
+		}
+	}
+
+	// Activity log should have received all workspace events
+	records, err := actLog.Read(ActivityLogFilter{ScopeKind: ScopeKindWorkspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) < 3 {
+		t.Fatalf("expected at least 3 activity log records (clone_started, clone_completed, worktree_creating, worktree_created, hydrate_*), got %d", len(records))
+	}
+
+	// Verify clone_started is in the activity log
+	foundCloneStarted := false
+	for _, r := range records {
+		if r.Event == string(EventCloneStarted) {
+			foundCloneStarted = true
+			break
+		}
+	}
+	if !foundCloneStarted {
+		t.Fatal("expected clone_started in activity log")
+	}
+}
+
+func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
+	dir := t.TempDir()
+	upstream := createUpstreamRepo(t, dir)
+	repoRoot := filepath.Join(dir, "ws")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	actLogPath := filepath.Join(dir, "activity.log")
+	actLog := NewActivityLog(actLogPath)
+
+	portFile := filepath.Join(dir, "ports.json")
+	store := newMemStore()
+	p := &Provisioner{
+		ActivityLog:   actLog,
+		IDEAdapter:    &stubIDEAdapter{},
+		PortAllocator: NewPortAllocator(portFile),
+	}
+
+	spec := WorkspaceSpec{
+		Name:         "test",
+		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     filepath.Join(repoRoot, ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+		IDE:          &IDESpecConfig{Adapter: "stub"},
+	}
+
+	_, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Activity log should contain IDE events with correct scope
+	ideRecords, err := actLog.Read(ActivityLogFilter{ScopeKind: ScopeKindIDE})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ideRecords) < 2 {
+		t.Fatalf("expected at least 2 IDE activity log records (started, ready), got %d", len(ideRecords))
+	}
+
+	// Verify scope name matches workspace name
+	for _, r := range ideRecords {
+		if r.Scope.Name != "test" {
+			t.Errorf("expected IDE scope name 'test', got %s", r.Scope.Name)
+		}
+	}
+}
+
+func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	upstream := createUpstreamRepo(t, dir)
+	repoRoot := filepath.Join(dir, "ws")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	store := newMemStore()
+	p := &Provisioner{
+		
+		// ActivityLog intentionally nil
+	}
+
+	spec := WorkspaceSpec{
+		Name:         "test",
+		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     filepath.Join(repoRoot, ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        currentUser(),
+	}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
+	}
+}
+
+func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	projectRoot := filepath.Join(repoRoot, "default")
+
+	// Simulate existing worktree with .git directory
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	actLogPath := filepath.Join(dir, "activity.log")
+	actLog := NewActivityLog(actLogPath)
+
+	store := newMemStore()
+	p := &Provisioner{
+		ActivityLog: actLog,
+	}
+
+	spec := WorkspaceSpec{
+		Name:         "myws",
+		VCS:          VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git", Branch: "main"},
+		ProjectRoot:  projectRoot,
+		RepoRoot:     repoRoot,
+		BareRoot:     filepath.Join(repoRoot, ".bare"),
+		WorktreeName: "default",
+		IsDefault:    true,
+		Owner:        "testuser",
+	}
+
+	inst, err := p.Provision(store, spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The worktree_created event should carry workspace:myws scope
+	if len(inst.Events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	for _, ev := range inst.Events {
+		if ev.Scope.Kind != ScopeKindWorkspace {
+			t.Errorf("expected workspace scope, got %s for event %s", ev.Scope.Kind, ev.Event)
+		}
+		if ev.Scope.Name != "myws" {
+			t.Errorf("expected scope name 'myws', got %s for event %s", ev.Scope.Name, ev.Event)
+		}
+	}
+
+	// Activity log should have received the event
+	records, err := actLog.Read(ActivityLogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		t.Fatal("expected at least one activity log record")
+	}
+	if records[0].Scope.Name != "myws" {
+		t.Fatalf("expected scope name 'myws' in activity log, got %s", records[0].Scope.Name)
 	}
 }
 

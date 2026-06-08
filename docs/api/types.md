@@ -141,7 +141,7 @@ Returned by `workspace sync`.
 
 ## State File (`state.json`)
 
-Persisted at `--state-path` (default `/opt/dsc/var/dscd/state.json`).
+Persisted at `--state-path` (default `/var/lib/dscd/state.json`).
 
 ```json
 {
@@ -158,10 +158,6 @@ Persisted at `--state-path` (default `/opt/dsc/var/dscd/state.json`).
 - Missing state file is treated as empty (not an error)
 - Lock wraps all load-modify-save operations atomically
 
-## Log Files
+## Process Logging
 
-- **Directory:** `--log-dir` (default `/opt/dsc/var/dscd/logs`)
-- **Per-workspace:** `{log_dir}/{name}.log`
-- **Entry format:** `[2006-01-02T15:04:05Z] [phase] message`
-- **Phases:** `provision`, `error`, `sync`, `deprovision`, `prune`
-- **Mode:** append-only, created with `0644` permissions (directory `0755`)
+Operational diagnostics are emitted via `log/slog` as structured JSON to stdout, captured by journald through the systemd unit's `StandardOutput=journal`. Log level is configurable via `--log-level` (default: `info`).

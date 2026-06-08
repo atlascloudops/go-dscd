@@ -37,7 +37,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 			// Enumerate worktrees from the bare clone (inspect-only, not list)
 			worktrees, _ := domain.ListWorktrees(inst.Spec.BareRoot, inst.Spec.Owner)
 			inspectData := domain.WorkspaceInspectData{
-				WorkspaceInstance: *inst,
+				Workspace: *inst,
 				BareRoot:         inst.Spec.BareRoot,
 				WorktreeCount:    len(worktrees),
 				Worktrees:        worktrees,

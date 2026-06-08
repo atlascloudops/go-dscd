@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspacePruneCmd(store domain.StateStore, logDir string) *cobra.Command {
+func newWorkspacePruneCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune <workspace>",
 		Short: "Remove all clean non-default worktrees for a workspace",
@@ -16,9 +16,9 @@ func newWorkspacePruneCmd(store domain.StateStore, logDir string) *cobra.Command
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoName := args[0]
 			provisioner := &domain.Provisioner{
-				LogDir:        logDir,
 				IDEAdapter:    domain.NewCodeServerAdapter(),
 				PortAllocator: domain.NewPortAllocator(defaultPortFile),
+				ActivityLog:   activityLog,
 			}
 
 			result, err := provisioner.Prune(store, repoName)

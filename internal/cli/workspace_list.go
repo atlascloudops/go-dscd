@@ -52,8 +52,8 @@ func newWorkspaceListCmd(store domain.StateStore) *cobra.Command {
 	}
 }
 
-func sortedInstances(instances map[string]*domain.WorkspaceInstance) []*domain.WorkspaceInstance {
-	list := make([]*domain.WorkspaceInstance, 0, len(instances))
+func sortedInstances(instances map[string]*domain.Workspace) []*domain.Workspace {
+	list := make([]*domain.Workspace, 0, len(instances))
 	for _, inst := range instances {
 		list = append(list, inst)
 	}

@@ -73,7 +73,6 @@ Provision a workspace from an inline JSON spec. Uses bare-clone + worktree layou
 **Common side effects:**
 - All git commands run as `owner` via `su -` if different from current user
 - Persists instance to state file (with exclusive file lock)
-- Appends provisioning logs to `{log_dir}/{name}.log`
 - **Idempotent:** if worktree already exists at `project_root`, returns existing instance as-is
 
 **Errors:** `SPEC_INVALID`, `CLONE_FAILED`, `INTERNAL`
@@ -157,8 +156,6 @@ Remove a worktree (and optionally the entire bare clone).
 **Side Effects:**
 - Removes the worktree directory and its git metadata
 - Removes the workspace entry from the state file (with lock)
-- Appends log entry to `{log_dir}/{name}.log`
-
 **Guards:**
 - Cannot delete the `default` worktree without `--all` (returns `CANNOT_DELETE_DEFAULT`)
 - Checks `git status --porcelain` for uncommitted changes (returns `WORKTREE_DIRTY` unless `--force`)
@@ -188,8 +185,6 @@ Batch-remove all clean non-default worktrees for a workspace.
 **Side Effects:**
 - Removes each clean non-default worktree directory and git metadata
 - Removes pruned workspace entries from the state file (with lock)
-- Appends log entries to `{log_dir}/{name}.log`
-
 **Behavior:**
 - Never prunes the `default` worktree
 - Skips dirty worktrees (reason: `"uncommitted changes"`)
@@ -226,31 +221,4 @@ Sync persisted state against filesystem reality. **This is the only read-heavy c
 - Sets `LastSyncedAt` on all instances
 - Re-checks credentials and resolves HEAD commit
 - Persists all changes atomically (with exclusive file lock)
-- Writes per-workspace log entries
-
 **Errors:** `STATE_CORRUPT`
-
----
-
-## `dscd workspace logs <name>`
-
-Tail provisioning logs for a workspace.
-
-**Arguments:** exactly 1 — workspace name
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--lines` | int | `50` | Number of lines to tail |
-| `--follow` | bool | `false` | Stream new lines (polls every 1s) |
-
-**Log format:** `[2006-01-02T15:04:05Z] [phase] message`
-
-**Phases:** `provision`, `error`, `sync`, `deprovision`, `prune`
-
-**Log path:** `{log_dir}/{name}.log`
-
-If no log file exists, prints: `No log file for workspace 'X' (not yet provisioned)`
-
-**Errors:** `NOT_FOUND`

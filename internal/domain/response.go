@@ -54,11 +54,11 @@ func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
 	}
 }
 
-// WorkspaceInspectData extends WorkspaceInstance with worktree diagnostics for inspect responses.
+// WorkspaceInspectData extends Workspace with worktree diagnostics for inspect responses.
 // The IDEInfo field provides a clean adapter/port/status view when IDE state exists.
 // TemplateRepo is derived from the "template" git remote and omitted for standard clones.
 type WorkspaceInspectData struct {
-	WorkspaceInstance
+	Workspace
 	BareRoot      string   `json:"bare_root"`
 	WorktreeCount int      `json:"worktree_count"`
 	Worktrees     []string `json:"worktrees"`
@@ -70,16 +70,16 @@ type WorkspaceInspectData struct {
 // an optional IDEPort field (omitted when zero/IDE not ready) so clients can
 // discover tunnel targets without inspecting each workspace individually.
 type WorkspaceListItem struct {
-	Spec       WorkspaceSpec          `json:"spec"`
-	Status     Status                 `json:"status,omitempty"`
-	HeadCommit string                 `json:"head_commit,omitempty"`
-	IDEPort    int                    `json:"ide_port,omitempty"`
-	Events     []WorkspaceEventRecord `json:"events,omitempty"`
+	Spec       WorkspaceSpec `json:"spec"`
+	Status     Status        `json:"status,omitempty"`
+	HeadCommit string        `json:"head_commit,omitempty"`
+	IDEPort    int           `json:"ide_port,omitempty"`
+	Events     []EventRecord `json:"events,omitempty"`
 }
 
-// WorkspaceListItemFromInstance builds a WorkspaceListItem from an instance.
+// WorkspaceListItemFromInstance builds a WorkspaceListItem from a Workspace.
 // IDEPort is set only when the IDE is active (status == Ready).
-func WorkspaceListItemFromInstance(inst *WorkspaceInstance) WorkspaceListItem {
+func WorkspaceListItemFromInstance(inst *Workspace) WorkspaceListItem {
 	item := WorkspaceListItem{
 		Spec:       inst.Spec,
 		Status:     inst.Status,

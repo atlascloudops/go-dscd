@@ -11,9 +11,10 @@ import (
 )
 
 type StateFile struct {
-	Version    string                               `json:"version"`
-	UpdatedAt  time.Time                            `json:"updated_at"`
-	Workspaces map[string]*domain.WorkspaceInstance `json:"workspaces"`
+	Version     string                               `json:"version"`
+	UpdatedAt   time.Time                            `json:"updated_at"`
+	Workspaces  map[string]*domain.Workspace  `json:"workspaces"`
+	Credentials map[string]*domain.CredentialState    `json:"credentials,omitempty"`
 }
 
 type FileStore struct {
@@ -24,11 +25,74 @@ func NewFileStore(path string) *FileStore {
 	return &FileStore{path: path}
 }
 
-func (s *FileStore) Load() (map[string]*domain.WorkspaceInstance, error) {
+func (s *FileStore) Load() (map[string]*domain.Workspace, error) {
+	state, err := s.LoadState()
+	if err != nil {
+		return nil, err
+	}
+	return state.Workspaces, nil
+}
+
+func (s *FileStore) Save(instances map[string]*domain.Workspace) error {
+	// Load existing state to preserve credentials across workspace-only saves
+	existing, _ := s.loadStateFile()
+	var creds map[string]*domain.CredentialState
+	if existing != nil {
+		creds = existing.Credentials
+	}
+	return s.SaveState(&domain.DaemonState{
+		Workspaces:  instances,
+		Credentials: creds,
+	})
+}
+
+func (s *FileStore) LoadState() (*domain.DaemonState, error) {
+	sf, err := s.loadStateFile()
+	if err != nil {
+		return nil, err
+	}
+	if sf == nil {
+		return &domain.DaemonState{
+			Workspaces:  make(map[string]*domain.Workspace),
+			Credentials: make(map[string]*domain.CredentialState),
+		}, nil
+	}
+	state := &domain.DaemonState{
+		Workspaces:  sf.Workspaces,
+		Credentials: sf.Credentials,
+	}
+	if state.Workspaces == nil {
+		state.Workspaces = make(map[string]*domain.Workspace)
+	}
+	if state.Credentials == nil {
+		state.Credentials = make(map[string]*domain.CredentialState)
+	}
+	return state, nil
+}
+
+func (s *FileStore) SaveState(state *domain.DaemonState) error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+		return err
+	}
+	sf := StateFile{
+		Version:     "v1",
+		UpdatedAt:   time.Now().UTC(),
+		Workspaces:  state.Workspaces,
+		Credentials: state.Credentials,
+	}
+	data, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, data, 0664)
+}
+
+// loadStateFile reads and parses the state file, returning nil if the file does not exist.
+func (s *FileStore) loadStateFile() (*StateFile, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return make(map[string]*domain.WorkspaceInstance), nil
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -36,26 +100,7 @@ func (s *FileStore) Load() (map[string]*domain.WorkspaceInstance, error) {
 	if err := json.Unmarshal(data, &sf); err != nil {
 		return nil, err
 	}
-	if sf.Workspaces == nil {
-		return make(map[string]*domain.WorkspaceInstance), nil
-	}
-	return sf.Workspaces, nil
-}
-
-func (s *FileStore) Save(instances map[string]*domain.WorkspaceInstance) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return err
-	}
-	sf := StateFile{
-		Version:    "v1",
-		UpdatedAt:  time.Now().UTC(),
-		Workspaces: instances,
-	}
-	data, err := json.MarshalIndent(sf, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, data, 0664)
+	return &sf, nil
 }
 
 func (s *FileStore) Path() string {
