@@ -48,13 +48,27 @@ func DeriveLocalRepoRoot(workspaceRoot, name string) string {
 	return filepath.Join(workspaceRoot, "local", name)
 }
 
-// expandHome replaces a leading ~ with /home/<owner>.
+// expandHome replaces a leading ~ with the user's home directory.
+// If owner is provided, it constructs /home/<owner>. Otherwise it
+// uses os.UserHomeDir() to detect the current user's home.
 func expandHome(path, owner string) string {
 	if len(path) == 0 {
 		return path
 	}
 	if path[0] == '~' {
-		return fmt.Sprintf("/home/%s%s", owner, path[1:])
+		if owner != "" {
+			return fmt.Sprintf("/home/%s%s", owner, path[1:])
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Fallback: try HOME env var directly
+			home = os.Getenv("HOME")
+		}
+		if home == "" {
+			// Last resort: return unexpanded
+			return path
+		}
+		return home + path[1:]
 	}
 	return path
 }
