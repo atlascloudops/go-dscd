@@ -36,17 +36,16 @@ func (p *Provisioner) recordIDEEvent(ide *IDEInstance, event IDEEvent, detail st
 }
 
 // Provision creates a workspace using the new aggregate model.
-// Params carries the simplified spec plus server-derived paths.
+// It always provisions a bare clone + default worktree on HEAD. Non-default
+// worktrees are created lazily via AddWorktree. IDE startup is deferred to
+// the ide-worktree-scoping story.
 func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Workspace, error) {
 	spec := params.Spec
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}
-	if err := p.resolveIDEAdapter(); err != nil {
-		return nil, err
-	}
 
-	// Idempotency check — if worktree already exists, return ready
+	// Idempotency check — if default worktree already exists, return ready
 	projectRoot := params.ProjectRoot()
 	if worktreeExists(projectRoot) {
 		return p.returnIdempotent(store, params)
@@ -57,13 +56,7 @@ func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Work
 		return p.provisionTemplate(store, params)
 	}
 
-	bareExists := dirExists(params.BareRoot())
-
-	if !bareExists {
-		return p.provisionBareCloneAndDefault(store, params)
-	}
-
-	return p.provisionWorktreeFromExisting(store, params)
+	return p.provisionBareCloneAndDefault(store, params)
 }
 
 // newWorkspaceFromParams creates a new Workspace aggregate from provision params.
@@ -127,15 +120,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 			})
 		}
 
-		// IDE: start if requested or health-check existing
-		if p.IDEAdapter != nil {
-			defaultIDE := ws.IDEForWorktree("default")
-			if defaultIDE == nil || defaultIDE.Status != StatusReady {
-				p.startIDEForWorktree(ws, "default", params.ProjectRoot())
-			} else {
-				p.healthCheckIDEForWorktree(ws, "default")
-			}
-		}
+		// IDE startup is deferred to the ide-worktree-scoping story
 
 		instances[params.Spec.Name] = ws
 		return store.Save(instances)
@@ -145,55 +130,49 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 	return ws, nil
 }
 
-// provisionBareCloneAndDefault creates a bare clone and the default worktree.
+// provisionBareCloneAndDefault creates a bare clone (if absent) and the default
+// worktree on HEAD. This is the sole provision path — non-default worktrees are
+// created lazily via AddWorktree.
 func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params ProvisionParams) (*Workspace, error) {
 	now := time.Now().UTC()
 	spec := params.Spec
 
 	ws := newWorkspaceFromParams(params, &now)
-	p.recordWorkspaceEvent(ws, EventCloneStarted, spec.VCS.CloneURL)
 
 	// 1. mkdir -p <repo_root>
 	if err := os.MkdirAll(params.RepoRoot(), 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
 	}
 
-	// 2. git clone --bare <clone_url> <bare_root>
-	if err := p.bareClone(spec.VCS.CloneURL, params.BareRoot(), spec.Owner); err != nil {
-		errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
-		ws.LastError = &errMsg
-		p.persistState(store, spec.Name, ws)
-		return ws, &ProvisionError{
-			Code:    ErrCloneFailed,
-			Message: "git clone --bare failed",
-			Detail:  err.Error(),
-		}
-	}
-	p.recordWorkspaceEvent(ws, EventCloneCompleted, "")
+	// 2. Clone bare repo if it doesn't already exist
+	if !dirExists(params.BareRoot()) {
+		p.recordWorkspaceEvent(ws, EventCloneStarted, spec.VCS.CloneURL)
 
-	// 3. Resolve default branch
+		if err := p.bareClone(spec.VCS.CloneURL, params.BareRoot(), spec.Owner); err != nil {
+			errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
+			p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+			ws.LastError = &errMsg
+			p.persistState(store, spec.Name, ws)
+			return ws, &ProvisionError{
+				Code:    ErrCloneFailed,
+				Message: "git clone --bare failed",
+				Detail:  err.Error(),
+			}
+		}
+		p.recordWorkspaceEvent(ws, EventCloneCompleted, "")
+	}
+
+	// 3. Resolve default branch from bare clone HEAD
 	defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 	if err != nil {
 		slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
 		defaultBranch = "main"
 	}
 
-	// 4. Determine worktree name and branch from workspace name.
-	worktreeName := "default"
-	isDefault := true
-	branch := defaultBranch
+	// 4. Create default worktree: git -C <bare_root> worktree add <path> <branch>
 	worktreePath := params.ProjectRoot()
-
-	if parts := strings.SplitN(spec.Name, "/", 2); len(parts) == 2 {
-		worktreeName = parts[1]
-		branch = parts[1]
-		isDefault = false
-	}
-
-	// 5. git -C <bare_root> worktree add <path> <branch>
-	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
-	if err := p.addWorktree(params.BareRoot(), worktreePath, branch, spec.Owner); err != nil {
+	p.recordWorkspaceEvent(ws, EventWorktreeCreating, defaultBranch)
+	if err := p.addWorktree(params.BareRoot(), worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -204,21 +183,23 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 			Detail:  err.Error(),
 		}
 	}
-	p.recordWorkspaceEvent(ws, EventWorktreeCreated, branch)
+	p.recordWorkspaceEvent(ws, EventWorktreeCreated, defaultBranch)
 
-	// 6. Populate worktrees on the aggregate
+	// 5. Populate the default worktree on the aggregate
 	ws.Worktrees = []Worktree{
 		{
-			Name:        worktreeName,
-			Branch:      branch,
+			Name:        "default",
+			Branch:      defaultBranch,
 			ProjectRoot: worktreePath,
-			IsDefault:   isDefault,
+			IsDefault:   true,
 			HeadCommit:  ResolveHeadCommit(worktreePath, spec.Owner),
 		},
 	}
 
+	// 6. Hydrate (fetch + fast-forward pull on default worktree)
 	p.hydrateWorktrees(ws)
-	p.startIDEForWorktree(ws, worktreeName, worktreePath)
+
+	// IDE startup is deferred to the ide-worktree-scoping story
 
 	if err := p.persistState(store, spec.Name, ws); err != nil {
 		return nil, err
@@ -359,73 +340,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 		},
 	}
 
-	p.startIDEForWorktree(ws, "default", worktreePath)
-
-	if err := p.persistState(store, spec.Name, ws); err != nil {
-		return nil, err
-	}
-
-	return ws, nil
-}
-
-// provisionWorktreeFromExisting adds a default worktree from an existing bare clone.
-func (p *Provisioner) provisionWorktreeFromExisting(store StateStore, params ProvisionParams) (*Workspace, error) {
-	now := time.Now().UTC()
-	spec := params.Spec
-
-	ws := newWorkspaceFromParams(params, &now)
-
-	// Determine worktree name and branch from the workspace name.
-	// If name contains "/", the second segment is the worktree/branch name.
-	// Otherwise it's the default worktree on the default branch.
-	worktreeName := "default"
-	isDefault := true
-	var branch string
-
-	if parts := strings.SplitN(spec.Name, "/", 2); len(parts) == 2 {
-		worktreeName = parts[1]
-		branch = parts[1]
-		isDefault = false
-	}
-
-	if isDefault {
-		// Resolve default branch for default worktree
-		defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
-		if err != nil {
-			slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
-			defaultBranch = "main"
-		}
-		branch = defaultBranch
-	}
-
-	worktreePath := params.ProjectRoot()
-
-	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
-	if err := p.addWorktree(params.BareRoot(), worktreePath, branch, spec.Owner); err != nil {
-		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
-		ws.LastError = &errMsg
-		p.persistState(store, spec.Name, ws)
-		return ws, &ProvisionError{
-			Code:    ErrCloneFailed,
-			Message: "git worktree add failed",
-			Detail:  err.Error(),
-		}
-	}
-	p.recordWorkspaceEvent(ws, EventWorktreeCreated, branch)
-
-	ws.Worktrees = []Worktree{
-		{
-			Name:        worktreeName,
-			Branch:      branch,
-			ProjectRoot: worktreePath,
-			IsDefault:   isDefault,
-			HeadCommit:  ResolveHeadCommit(worktreePath, spec.Owner),
-		},
-	}
-
-	p.hydrateWorktrees(ws)
-	p.startIDEForWorktree(ws, worktreeName, worktreePath)
+	// IDE startup is deferred to the ide-worktree-scoping story
 
 	if err := p.persistState(store, spec.Name, ws); err != nil {
 		return nil, err

@@ -186,17 +186,9 @@ func TestListWorktrees_RealGit(t *testing.T) {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
-	// Provision feature worktree
-	featureParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/feature-vpc",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: filepath.Join(dir, "code"),
-	}
-	if _, err := p.Provision(store, featureParams); err != nil {
-		t.Fatalf("feature provision failed: %v", err)
+	// Add feature worktree via AddWorktree
+	if _, err := p.AddWorktree(store, "myrepo", "feature-vpc"); err != nil {
+		t.Fatalf("AddWorktree feature-vpc failed: %v", err)
 	}
 
 	// AC: ListWorktrees returns both worktree names, excluding the bare root

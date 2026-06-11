@@ -398,18 +398,17 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 
 func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	tw := setupTestWorkspace(t, "github.com", "org/repo")
-	featureRoot := tw.worktreeRoot("feature")
 
-	// Simulate existing worktree with .git as a file (worktree pointer)
-	os.MkdirAll(featureRoot, 0755)
-	os.WriteFile(filepath.Join(featureRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
+	// Simulate existing default worktree with .git as a file (worktree pointer)
+	os.MkdirAll(tw.DefaultRoot, 0755)
+	os.WriteFile(filepath.Join(tw.DefaultRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/default\n"), 0644)
 
 	store := newMemStore()
 	p := &Provisioner{}
 
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
-			Name:  "test/feature",
+			Name:  "test",
 			VCS:   VCSTarget{Host: "github.com", Repo: "org/repo", CloneURL: "https://github.com/org/repo.git"},
 			Owner: "testuser",
 		},
@@ -542,7 +541,7 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	}
 }
 
-func TestProvisionWorktree_FromExistingBare(t *testing.T) {
+func TestAddWorktree_FromExistingBare(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -565,38 +564,28 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 		},
 		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
-	_ = defaultParams.BareRoot()
-	_ = defaultParams.ProjectRoot()
 
 	_, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
-	// Step 2: Provision branch worktree from existing bare
+	// Step 2: Add branch worktree via AddWorktree (not provision)
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
-	featureParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/feature-vpc",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: filepath.Join(dir, "code"),
-	}
-	_ = featureParams.BareRoot()
-	_ = featureParams.ProjectRoot()
-
-	inst, err := p.Provision(store, featureParams)
+	result, err := p.AddWorktree(store, "myrepo", "feature-vpc")
 	if err != nil {
-		t.Fatalf("worktree provision failed: %v", err)
+		t.Fatalf("AddWorktree failed: %v", err)
 	}
 
-	// AC: Second provision creates .worktrees/<name>/
+	// AC: AddWorktree creates .worktrees/<name>/
 	if !worktreeExists(featureRoot) {
 		t.Fatal(".worktrees/feature-vpc/ worktree was not created")
 	}
-	if inst.Status != StatusReady {
-		t.Fatalf("expected ready, got %s", inst.Status)
+	if !result.Created {
+		t.Fatal("expected Created=true")
+	}
+	if result.ProjectRoot != featureRoot {
+		t.Fatalf("expected project root %s, got %s", featureRoot, result.ProjectRoot)
 	}
 
 	// Verify .git in feature worktree is a file
@@ -609,62 +598,71 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 		t.Fatal(".git in worktree should be a file, not a directory")
 	}
 
-	// Both workspaces should be in the store
-	if store.instances["myrepo"] == nil {
-		t.Fatal("default workspace not in store")
+	// Workspace should have 2 worktrees in the aggregate
+	ws := store.instances["myrepo"]
+	if ws == nil {
+		t.Fatal("workspace not in store")
 	}
-	if store.instances["myrepo/feature-vpc"] == nil {
-		t.Fatal("feature workspace not in store")
+	if len(ws.Worktrees) != 2 {
+		t.Fatalf("expected 2 worktrees, got %d", len(ws.Worktrees))
 	}
 }
 
-func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
+func TestProvision_AlwaysCreatesDefaultWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
 	dir := t.TempDir()
 	upstreamBare := createUpstreamRepo(t, dir)
-	addUpstreamBranch(t, dir, "feature-vpc", "vpc.tf", "# vpc\n")
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
+	defaultRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
 
-	// AC: Non-default worktree requested before bare clone exists -> bare clone is created automatically
+	// Even if an old-format name with "/" is sent, provision always creates
+	// the default worktree (backward compatibility — extra fields are ignored)
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
-			Name:  "myrepo/feature-vpc",
+			Name:  "myrepo",
 			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
 		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
-	bareRoot := params.BareRoot()
-	_ = params.ProjectRoot()
 
 	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
 
-	if !dirExists(bareRoot) {
-		t.Fatal(".bare/ should have been created automatically for non-default worktree")
+	if !dirExists(params.BareRoot()) {
+		t.Fatal(".bare/ should exist")
 	}
-	if !worktreeExists(featureRoot) {
-		t.Fatal("worktree should exist")
+	if !worktreeExists(defaultRoot) {
+		t.Fatal("default worktree should exist")
 	}
 	if inst.Status != StatusReady {
 		t.Fatalf("expected ready, got %s", inst.Status)
 	}
+
+	// Verify default worktree is the only one
+	if len(inst.Worktrees) != 1 {
+		t.Fatalf("expected 1 worktree, got %d", len(inst.Worktrees))
+	}
+	if !inst.Worktrees[0].IsDefault {
+		t.Fatal("expected worktree to be default")
+	}
+	if inst.Worktrees[0].Name != "default" {
+		t.Fatalf("expected worktree name 'default', got %q", inst.Worktrees[0].Name)
+	}
 }
 
-// TestFullWorktreeLifecycle exercises the entire validation sequence from the
-// validate-worktree-on-dev-pod story: provision bare clone + default, add branch
-// worktree, inspect, deprovision clean, deprovision dirty (guard + force),
-// cannot-delete-default guard, prune, sync, and idempotent re-provision.
+// TestFullWorktreeLifecycle exercises the entire validation sequence:
+// provision bare clone + default, add branch worktree via AddWorktree, inspect,
+// deprovision worktree, dirty guard + force, prune, sync, and idempotent re-provision.
 func TestFullWorktreeLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -684,7 +682,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	// --- Step 3: Provision first workspace (bare clone + default worktree) ---
+	// --- Step 3: Provision workspace (bare clone + default worktree) ---
 	defaultParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:    "ocr-service",
@@ -714,7 +712,6 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if info.IsDir() {
 		t.Fatal("step 4: .git in worktree should be a file, not directory")
 	}
-	// Verify default branch resolved via symbolic-ref
 	branch, err := resolveDefaultBranch(bareRoot, currentUser())
 	if err != nil {
 		t.Fatalf("step 4: resolveDefaultBranch: %v", err)
@@ -723,24 +720,14 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 		t.Fatalf("step 4: expected main, got %s", branch)
 	}
 
-	// --- Step 5: Provision branch worktree (reuses existing .bare/) ---
-	expParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:    "ocr-service/experiment",
-			VCS:     VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
-			PatName: "gitlab-token",
-			Owner:   currentUser(),
-		},
-		WorkspaceRoot: filepath.Join(dir, "code"),
-	}
-	inst2, err := p.Provision(store, expParams)
+	// --- Step 5: Add branch worktree via AddWorktree ---
+	expResult, err := p.AddWorktree(store, "ocr-service", "experiment")
 	if err != nil {
-		t.Fatalf("step 5: experiment provision failed: %v", err)
+		t.Fatalf("step 5: AddWorktree experiment failed: %v", err)
 	}
-	if inst2.Status != StatusReady {
-		t.Fatalf("step 5: expected ready, got %s", inst2.Status)
+	if !expResult.Created {
+		t.Fatal("step 5: expected Created=true")
 	}
-	// Verify .git file in experiment worktree
 	expGit := filepath.Join(experimentRoot, ".git")
 	expInfo, err := os.Stat(expGit)
 	if err != nil {
@@ -759,28 +746,25 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 		t.Fatalf("step 8: expected 2 worktrees, got %d: %v", len(worktrees), worktrees)
 	}
 
-	// --- Step 10: Delete clean worktree ---
-	result, err := p.Deprovision(store, "ocr-service/experiment", false)
+	// --- Step 10: Delete clean worktree via DeprovisionWorktree ---
+	dpResult, err := p.DeprovisionWorktree(store, "ocr-service", "experiment", false)
 	if err != nil {
-		t.Fatalf("step 10: deprovision clean failed: %v", err)
+		t.Fatalf("step 10: deprovision worktree failed: %v", err)
 	}
-	if len(result.Removed) != 1 || result.Removed[0] != "ocr-service/experiment" {
-		t.Fatalf("step 10: unexpected removed: %v", result.Removed)
-	}
-	if store.instances["ocr-service/experiment"] != nil {
-		t.Fatal("step 10: experiment should be gone from state")
+	if len(dpResult.RemovedWorktrees) != 1 || dpResult.RemovedWorktrees[0] != "experiment" {
+		t.Fatalf("step 10: unexpected removed worktrees: %v", dpResult.RemovedWorktrees)
 	}
 	if worktreeExists(experimentRoot) {
 		t.Fatal("step 10: experiment directory should be gone")
 	}
 
 	// --- Step 11: Re-create, dirty it, attempt delete (guard) ---
-	_, err = p.Provision(store, expParams)
+	_, err = p.AddWorktree(store, "ocr-service", "experiment")
 	if err != nil {
-		t.Fatalf("step 11: re-provision failed: %v", err)
+		t.Fatalf("step 11: re-add worktree failed: %v", err)
 	}
 	os.WriteFile(filepath.Join(experimentRoot, "DIRTY.txt"), []byte("dirty\n"), 0644)
-	_, err = p.Deprovision(store, "ocr-service/experiment", false)
+	_, err = p.DeprovisionWorktree(store, "ocr-service", "experiment", false)
 	if err == nil {
 		t.Fatal("step 11: expected error for dirty worktree")
 	}
@@ -791,74 +775,23 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if pe.Code != ErrWorktreeDirty {
 		t.Fatalf("step 11: expected WORKTREE_DIRTY, got %s", pe.Code)
 	}
-	if store.instances["ocr-service/experiment"] == nil {
-		t.Fatal("step 11: experiment should still be in state")
-	}
 
 	// --- Step 12: Force delete dirty worktree ---
-	result, err = p.Deprovision(store, "ocr-service/experiment", true)
+	_, err = p.DeprovisionWorktree(store, "ocr-service", "experiment", true)
 	if err != nil {
-		t.Fatalf("step 12: force deprovision failed: %v", err)
-	}
-	if len(result.Removed) != 1 {
-		t.Fatalf("step 12: unexpected removed count: %d", len(result.Removed))
-	}
-	if store.instances["ocr-service/experiment"] != nil {
-		t.Fatal("step 12: experiment should be gone after force delete")
+		t.Fatalf("step 12: force deprovision worktree failed: %v", err)
 	}
 
-	// Re-provision default workspace (step 12's force deprovision of
-	// ocr-service/experiment removes the shared RepoRoot, including .bare/ and default/)
-	inst, err = p.Provision(store, defaultParams)
-	if err != nil {
-		t.Fatalf("step 12b: re-provision default failed: %v", err)
-	}
-	if inst.Status != StatusReady {
-		t.Fatalf("step 12b: expected ready, got %s", inst.Status)
-	}
-
-	// --- Step 14-15: Provision multiple worktrees, prune clean ---
+	// --- Step 14-15: Add multiple worktrees via AddWorktree, prune clean ---
 	spikeARoot := filepath.Join(repoRoot, ".worktrees", "spike-a")
-	_ = filepath.Join(repoRoot, ".worktrees", "spike-b")
-	spikeAParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "ocr-service/spike-a",
-			VCS:   VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: filepath.Join(dir, "code"),
-	}
-	spikeBParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "ocr-service/spike-b",
-			VCS:   VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: filepath.Join(dir, "code"),
-	}
-	spikeAWs, err := p.Provision(store, spikeAParams)
+	_, err = p.AddWorktree(store, "ocr-service", "spike-a")
 	if err != nil {
-		t.Fatalf("step 14: spike-a provision failed: %v", err)
+		t.Fatalf("step 14: AddWorktree spike-a failed: %v", err)
 	}
-	spikeBWs, err := p.Provision(store, spikeBParams)
+	_, err = p.AddWorktree(store, "ocr-service", "spike-b")
 	if err != nil {
-		t.Fatalf("step 14: spike-b provision failed: %v", err)
+		t.Fatalf("step 14: AddWorktree spike-b failed: %v", err)
 	}
-
-	// Add worktrees to the root aggregate's Worktrees slice (prune operates on the aggregate)
-	rootWs := store.instances["ocr-service"]
-	spikeAProjRoot := ""
-	if len(spikeAWs.Worktrees) > 0 {
-		spikeAProjRoot = spikeAWs.Worktrees[0].ProjectRoot
-	}
-	spikeBProjRoot := ""
-	if len(spikeBWs.Worktrees) > 0 {
-		spikeBProjRoot = spikeBWs.Worktrees[0].ProjectRoot
-	}
-	rootWs.Worktrees = append(rootWs.Worktrees,
-		Worktree{Name: "spike-a", Branch: "spike-a", ProjectRoot: spikeAProjRoot, IsDefault: false},
-		Worktree{Name: "spike-b", Branch: "spike-b", ProjectRoot: spikeBProjRoot, IsDefault: false},
-	)
 
 	pruneResult, err := p.Prune(store, "ocr-service")
 	if err != nil {
@@ -875,22 +808,14 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 
 	// --- Step 16: Prune with one dirty worktree ---
-	spikeAWs2, _ := p.Provision(store, spikeAParams)
-	spikeBWs2, _ := p.Provision(store, spikeBParams)
-	// Re-add worktrees to root aggregate
-	rootWs = store.instances["ocr-service"]
-	spikeAProjRoot2 := ""
-	if len(spikeAWs2.Worktrees) > 0 {
-		spikeAProjRoot2 = spikeAWs2.Worktrees[0].ProjectRoot
+	_, err = p.AddWorktree(store, "ocr-service", "spike-a")
+	if err != nil {
+		t.Fatalf("step 16: AddWorktree spike-a failed: %v", err)
 	}
-	spikeBProjRoot2 := ""
-	if len(spikeBWs2.Worktrees) > 0 {
-		spikeBProjRoot2 = spikeBWs2.Worktrees[0].ProjectRoot
+	_, err = p.AddWorktree(store, "ocr-service", "spike-b")
+	if err != nil {
+		t.Fatalf("step 16: AddWorktree spike-b failed: %v", err)
 	}
-	rootWs.Worktrees = append(rootWs.Worktrees,
-		Worktree{Name: "spike-a", Branch: "spike-a", ProjectRoot: spikeAProjRoot2, IsDefault: false},
-		Worktree{Name: "spike-b", Branch: "spike-b", ProjectRoot: spikeBProjRoot2, IsDefault: false},
-	)
 	os.WriteFile(filepath.Join(spikeARoot, "DIRTY.txt"), []byte("dirty\n"), 0644)
 
 	pruneResult, err = p.Prune(store, "ocr-service")
@@ -906,10 +831,6 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	if pruneResult.Skipped[0].Reason != "uncommitted changes" {
 		t.Fatalf("step 16: expected 'uncommitted changes', got %q", pruneResult.Skipped[0].Reason)
 	}
-
-	// Cleanup spike-a state entry (don't use Deprovision which would remove
-	// the shared RepoRoot directory including the default worktree)
-	delete(store.instances, "ocr-service/spike-a")
 
 	// --- Step 17: Sync detects corrupted lifecycle ---
 	store.instances["ocr-service"].Status = StatusPending // manually corrupt
@@ -1743,7 +1664,7 @@ func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
 	}
 }
 
-func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
+func TestProvision_ActivityLogNoIDEEvents(t *testing.T) {
 	tw := setupTestWorkspace(t, "github.com", "test/myrepo")
 	upstream := createUpstreamRepo(t, tw.WorkspaceRoot)
 
@@ -1772,20 +1693,22 @@ func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Activity log should contain IDE events with correct scope
+	// IDE startup is deferred — no IDE events should be in the activity log
 	ideRecords, err := actLog.Read(ActivityLogFilter{ScopeKind: ScopeKindIDE})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ideRecords) < 2 {
-		t.Fatalf("expected at least 2 IDE activity log records (started, ready), got %d", len(ideRecords))
+	if len(ideRecords) != 0 {
+		t.Fatalf("expected 0 IDE activity log records (IDE deferred), got %d", len(ideRecords))
 	}
 
-	// Verify scope name matches workspace name
-	for _, r := range ideRecords {
-		if r.Scope.Name != "test" {
-			t.Errorf("expected IDE scope name 'test', got %s", r.Scope.Name)
-		}
+	// Workspace events should still be present
+	wsRecords, err := actLog.Read(ActivityLogFilter{ScopeKind: ScopeKindWorkspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wsRecords) == 0 {
+		t.Fatal("expected workspace events in activity log")
 	}
 }
 

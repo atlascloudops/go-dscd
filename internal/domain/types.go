@@ -2,7 +2,6 @@ package domain
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
 )
 
@@ -71,15 +70,11 @@ func (p ProvisionParams) BareRoot() string {
 	return DeriveBareRoot(p.RepoRoot())
 }
 
-// ProjectRoot derives the worktree checkout directory from the spec name.
-// If the spec name contains "/", the second segment is the worktree name
-// (e.g. "myrepo/feature" -> worktree "feature"). Otherwise, "default".
+// ProjectRoot derives the default worktree checkout directory.
+// Provision always creates the default worktree; non-default worktrees
+// are created lazily via the `worktree add` command.
 func (p ProvisionParams) ProjectRoot() string {
-	worktreeName := "default"
-	if parts := strings.SplitN(p.Spec.Name, "/", 2); len(parts) == 2 {
-		worktreeName = parts[1]
-	}
-	return DeriveProjectRoot(p.RepoRoot(), worktreeName)
+	return DeriveProjectRoot(p.RepoRoot(), "default")
 }
 
 // Workspace is the aggregate root — one per repo per pod.

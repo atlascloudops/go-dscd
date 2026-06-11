@@ -523,51 +523,13 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 		t.Fatalf("provision failed: %v", err)
 	}
 
-	// IDE should be started and ready
-	if inst.IDE == nil {
-		t.Fatal("expected IDE map to be set")
-	}
-	ide := inst.IDE["default"]
-	if ide == nil {
-		t.Fatal("expected IDE instance for 'default' worktree")
-	}
-	if ide.Status != StatusReady {
-		t.Errorf("expected IDE status ready, got %s", ide.Status)
-	}
-	if ide.Port < 9100 || ide.Port > 9199 {
-		t.Errorf("expected port in range 9100-9199, got %d", ide.Port)
-	}
-	if ide.Adapter != "openvscode-server" {
-		t.Errorf("expected adapter 'openvscode-server', got %q", ide.Adapter)
+	// IDE startup is deferred to the ide-worktree-scoping story.
+	// Provision should NOT start IDE even when adapter is configured.
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (deferred to ide-worktree-scoping)")
 	}
 
-	// Should have emitted ide_started and ide_ready events in the IDE event stream
-	hasStarted, hasReady := false, false
-	for _, ev := range ide.Events {
-		if ev.Event == string(IDEEventStarted) {
-			hasStarted = true
-			// Verify scope is stamped correctly
-			if ev.Scope.Kind != ScopeKindIDE || ev.Scope.Name != "myrepo" {
-				t.Errorf("expected scope ide:myrepo, got %s", ev.Scope)
-			}
-		}
-		if ev.Event == string(IDEEventReady) {
-			hasReady = true
-		}
-	}
-	if !hasStarted {
-		t.Error("expected ide_started event")
-	}
-	if !hasReady {
-		t.Error("expected ide_ready event")
-	}
-
-	// IDE Name should be set to workspace name
-	if ide.Name != "myrepo" {
-		t.Errorf("expected IDE.Name %q, got %q", "myrepo", ide.Name)
-	}
-
-	// Workspace status should still be Ready (IDE events are in separate stream)
+	// Workspace status should still be Ready
 	if inst.Status != StatusReady {
 		t.Errorf("expected status ready, got %s", inst.Status)
 	}
@@ -608,35 +570,18 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 
 	inst, err := p.Provision(store, params)
 	if err != nil {
-		t.Fatalf("provision should succeed even when IDE fails: %v", err)
+		t.Fatalf("provision should succeed: %v", err)
 	}
 
-	// IDE instance should exist with failed status
-	if inst.IDE == nil {
-		t.Fatal("expected IDE map to be set even on failure")
-	}
-	ide := inst.IDE["default"]
-	if ide == nil {
-		t.Fatal("expected IDE instance for 'default' worktree even on failure")
-	}
-	if ide.Status != StatusFailed {
-		t.Errorf("expected IDE status failed, got %s", ide.Status)
-	}
-
-	// Should have ide_failed event in the IDE event stream
-	hasFailed := false
-	for _, ev := range ide.Events {
-		if ev.Event == string(IDEEventFailed) {
-			hasFailed = true
-		}
-	}
-	if !hasFailed {
-		t.Error("expected ide_failed event")
+	// IDE startup is deferred to the ide-worktree-scoping story.
+	// Provision should NOT start IDE even when adapter would fail.
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (deferred to ide-worktree-scoping)")
 	}
 
 	// Workspace status should still be Ready
 	if inst.Status != StatusReady {
-		t.Errorf("expected status ready despite IDE failure, got %s", inst.Status)
+		t.Errorf("expected status ready, got %s", inst.Status)
 	}
 }
 
@@ -938,28 +883,9 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 		}
 	}
 
-	// IDE event stream must contain ide_started and ide_ready
-	if inst.IDE == nil {
-		t.Fatal("expected IDE map to be set")
-	}
-	ide := inst.IDE["default"]
-	if ide == nil {
-		t.Fatal("expected IDE instance for 'default' worktree")
-	}
-	hasStarted2, hasReady2 := false, false
-	for _, ev := range ide.Events {
-		if ev.Event == string(IDEEventStarted) {
-			hasStarted2 = true
-		}
-		if ev.Event == string(IDEEventReady) {
-			hasReady2 = true
-		}
-	}
-	if !hasStarted2 {
-		t.Error("expected ide_started event in IDE event stream")
-	}
-	if !hasReady2 {
-		t.Error("expected ide_ready event in IDE event stream")
+	// IDE startup is deferred — no IDE instances should exist on provision
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (deferred to ide-worktree-scoping)")
 	}
 }
 

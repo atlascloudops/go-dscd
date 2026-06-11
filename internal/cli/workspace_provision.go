@@ -37,9 +37,8 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 			}
 
 			provisioner := &domain.Provisioner{
-				IDEAdapter:    domain.NewCodeServerAdapter(),
-				PortAllocator: domain.NewPortAllocator(defaultPortFile),
-				ActivityLog:   activityLog,
+				ActivityLog: activityLog,
+				// IDE startup is deferred to the ide-worktree-scoping story
 			}
 
 			ws, err := provisioner.Provision(store, params)

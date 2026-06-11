@@ -81,47 +81,18 @@ func TestPrune_AllClean(t *testing.T) {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
-	// Provision branch worktrees (creates separate state entries)
-	spikeAParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-a",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeAWs, err := p.Provision(store, spikeAParams)
+	// Add branch worktrees via AddWorktree
+	spikeAResult, err := p.AddWorktree(store, "myrepo", "spike-a")
 	if err != nil {
-		t.Fatalf("spike-a provision failed: %v", err)
+		t.Fatalf("AddWorktree spike-a failed: %v", err)
+	}
+	spikeBResult, err := p.AddWorktree(store, "myrepo", "spike-b")
+	if err != nil {
+		t.Fatalf("AddWorktree spike-b failed: %v", err)
 	}
 
-	spikeBParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-b",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeBWs, err := p.Provision(store, spikeBParams)
-	if err != nil {
-		t.Fatalf("spike-b provision failed: %v", err)
-	}
-
-	// Add worktrees to the root aggregate's Worktrees slice (new model)
-	ws := store.instances["myrepo"]
-	spikeARoot := ""
-	if len(spikeAWs.Worktrees) > 0 {
-		spikeARoot = spikeAWs.Worktrees[0].ProjectRoot
-	}
-	spikeBRoot := ""
-	if len(spikeBWs.Worktrees) > 0 {
-		spikeBRoot = spikeBWs.Worktrees[0].ProjectRoot
-	}
-	ws.Worktrees = append(ws.Worktrees,
-		Worktree{Name: "spike-a", Branch: "spike-a", ProjectRoot: spikeARoot, IsDefault: false},
-		Worktree{Name: "spike-b", Branch: "spike-b", ProjectRoot: spikeBRoot, IsDefault: false},
-	)
+	spikeARoot := spikeAResult.ProjectRoot
+	spikeBRoot := spikeBResult.ProjectRoot
 
 	// AC: Prune removes all clean non-default worktrees from the aggregate
 	result, err := p.Prune(store, "myrepo")
@@ -137,7 +108,7 @@ func TestPrune_AllClean(t *testing.T) {
 	}
 
 	// AC: Non-default worktrees removed from aggregate's Worktrees slice
-	ws = store.instances["myrepo"]
+	ws := store.instances["myrepo"]
 	if ws == nil {
 		t.Fatal("default workspace should still be in state")
 	}
@@ -185,7 +156,7 @@ func TestPrune_MixedCleanDirty(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	// Provision default + two branch worktrees
+	// Provision default
 	defaultParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
@@ -196,40 +167,11 @@ func TestPrune_MixedCleanDirty(t *testing.T) {
 	}
 	_, _ = p.Provision(store, defaultParams)
 
-	spikeAParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-a",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeAWs, _ := p.Provision(store, spikeAParams)
+	// Add branch worktrees via AddWorktree
+	spikeAResult, _ := p.AddWorktree(store, "myrepo", "spike-a")
+	_, _ = p.AddWorktree(store, "myrepo", "spike-b")
 
-	spikeBParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-b",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeBWs, _ := p.Provision(store, spikeBParams)
-
-	// Add worktrees to the root aggregate
-	ws := store.instances["myrepo"]
-	spikeARoot := ""
-	if len(spikeAWs.Worktrees) > 0 {
-		spikeARoot = spikeAWs.Worktrees[0].ProjectRoot
-	}
-	spikeBRoot := ""
-	if len(spikeBWs.Worktrees) > 0 {
-		spikeBRoot = spikeBWs.Worktrees[0].ProjectRoot
-	}
-	ws.Worktrees = append(ws.Worktrees,
-		Worktree{Name: "spike-a", Branch: "spike-a", ProjectRoot: spikeARoot, IsDefault: false},
-		Worktree{Name: "spike-b", Branch: "spike-b", ProjectRoot: spikeBRoot, IsDefault: false},
-	)
+	spikeARoot := spikeAResult.ProjectRoot
 
 	// Make spike-a dirty
 	if spikeARoot != "" {
@@ -260,7 +202,7 @@ func TestPrune_MixedCleanDirty(t *testing.T) {
 	}
 
 	// AC: Pruned worktree removed from aggregate, dirty one retained
-	ws = store.instances["myrepo"]
+	ws := store.instances["myrepo"]
 	if ws.FindWorktree("spike-b") != nil {
 		t.Fatal("spike-b should be removed from aggregate worktrees")
 	}
@@ -300,40 +242,12 @@ func TestPrune_AllDirty(t *testing.T) {
 	}
 	_, _ = p.Provision(store, defaultParams)
 
-	spikeAParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-a",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeAWs, _ := p.Provision(store, spikeAParams)
+	// Add branch worktrees via AddWorktree
+	spikeAResult, _ := p.AddWorktree(store, "myrepo", "spike-a")
+	spikeBResult, _ := p.AddWorktree(store, "myrepo", "spike-b")
 
-	spikeBParams := ProvisionParams{
-		Spec: WorkspaceSpec{
-			Name:  "myrepo/spike-b",
-			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
-			Owner: currentUser(),
-		},
-		WorkspaceRoot: dir,
-	}
-	spikeBWs, _ := p.Provision(store, spikeBParams)
-
-	// Add worktrees to aggregate
-	ws := store.instances["myrepo"]
-	spikeARoot := ""
-	if len(spikeAWs.Worktrees) > 0 {
-		spikeARoot = spikeAWs.Worktrees[0].ProjectRoot
-	}
-	spikeBRoot := ""
-	if len(spikeBWs.Worktrees) > 0 {
-		spikeBRoot = spikeBWs.Worktrees[0].ProjectRoot
-	}
-	ws.Worktrees = append(ws.Worktrees,
-		Worktree{Name: "spike-a", Branch: "spike-a", ProjectRoot: spikeARoot, IsDefault: false},
-		Worktree{Name: "spike-b", Branch: "spike-b", ProjectRoot: spikeBRoot, IsDefault: false},
-	)
+	spikeARoot := spikeAResult.ProjectRoot
+	spikeBRoot := spikeBResult.ProjectRoot
 
 	// Make both dirty
 	if spikeARoot != "" {
@@ -356,7 +270,7 @@ func TestPrune_AllDirty(t *testing.T) {
 	}
 
 	// All worktrees should still be in aggregate
-	ws = store.instances["myrepo"]
+	ws := store.instances["myrepo"]
 	if ws == nil {
 		t.Fatal("workspace should still be in state")
 	}
