@@ -35,10 +35,14 @@ func (s *FileStore) Load() (map[string]*domain.Workspace, error) {
 
 func (s *FileStore) Save(instances map[string]*domain.Workspace) error {
 	// Load existing state to preserve credentials across workspace-only saves
-	existing, _ := s.loadStateFile()
+	existing, _ := s.loadRaw()
 	var creds map[string]*domain.CredentialState
 	if existing != nil {
-		creds = existing.Credentials
+		// Parse just the credentials from the raw state.
+		var sf StateFile
+		if err := json.Unmarshal(existing, &sf); err == nil {
+			creds = sf.Credentials
+		}
 	}
 	return s.SaveState(&domain.DaemonState{
 		Workspaces:  instances,
@@ -47,16 +51,34 @@ func (s *FileStore) Save(instances map[string]*domain.Workspace) error {
 }
 
 func (s *FileStore) LoadState() (*domain.DaemonState, error) {
-	sf, err := s.loadStateFile()
+	raw, err := s.loadRaw()
 	if err != nil {
 		return nil, err
 	}
-	if sf == nil {
+	if raw == nil {
 		return &domain.DaemonState{
 			Workspaces:  make(map[string]*domain.Workspace),
 			Credentials: make(map[string]*domain.CredentialState),
 		}, nil
 	}
+
+	var sf *StateFile
+
+	// Check if migration is needed by inspecting raw JSON.
+	if needsMigrationRaw(raw) {
+		migrated, migrateErr := migrateV1ToV2(raw)
+		if migrateErr != nil {
+			return nil, migrateErr
+		}
+		sf = migrated
+	} else {
+		var parsed StateFile
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return nil, err
+		}
+		sf = &parsed
+	}
+
 	state := &domain.DaemonState{
 		Workspaces:  sf.Workspaces,
 		Credentials: sf.Credentials,
@@ -75,7 +97,7 @@ func (s *FileStore) SaveState(state *domain.DaemonState) error {
 		return err
 	}
 	sf := StateFile{
-		Version:     "v1",
+		Version:     StateVersionV2,
 		UpdatedAt:   time.Now().UTC(),
 		Workspaces:  state.Workspaces,
 		Credentials: state.Credentials,
@@ -87,14 +109,26 @@ func (s *FileStore) SaveState(state *domain.DaemonState) error {
 	return os.WriteFile(s.path, data, 0664)
 }
 
-// loadStateFile reads and parses the state file, returning nil if the file does not exist.
-func (s *FileStore) loadStateFile() (*StateFile, error) {
+// loadRaw reads the state file as raw bytes, returning nil if the file does not exist.
+func (s *FileStore) loadRaw() ([]byte, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	return data, nil
+}
+
+// loadStateFile reads and parses the state file, returning nil if the file does not exist.
+func (s *FileStore) loadStateFile() (*StateFile, error) {
+	data, err := s.loadRaw()
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, nil
 	}
 	var sf StateFile
 	if err := json.Unmarshal(data, &sf); err != nil {
