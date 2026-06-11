@@ -434,6 +434,114 @@ func (p *Provisioner) provisionWorktreeFromExisting(store StateStore, params Pro
 	return ws, nil
 }
 
+// WorktreeAddResult holds the outcome of an AddWorktree operation.
+type WorktreeAddResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	Branch        string `json:"branch"`
+	ProjectRoot   string `json:"project_root"`
+	Created       bool   `json:"created"` // false if worktree already existed (idempotent)
+}
+
+// AddWorktree lazily creates a worktree for a specific branch within an existing
+// workspace's bare clone. It fetches the branch from origin, creates the worktree
+// under <repo_root>/.worktrees/<branch>, appends a Worktree entry to the aggregate,
+// and returns the project root path. The operation is idempotent — if a worktree for
+// the branch already exists, the existing project root is returned without error.
+func (p *Provisioner) AddWorktree(store StateStore, workspaceName, branch string) (*WorktreeAddResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[workspaceName]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+		}
+	}
+
+	// Idempotency: if a worktree for this branch already exists, return it
+	if existing := ws.FindWorktreeByBranch(branch); existing != nil {
+		return &WorktreeAddResult{
+			WorkspaceName: workspaceName,
+			Branch:        branch,
+			ProjectRoot:   existing.ProjectRoot,
+			Created:       false,
+		}, nil
+	}
+
+	// Also check on disk — the worktree may exist but not be in state
+	projectRoot := DeriveProjectRoot(ws.RepoRoot, branch)
+	if worktreeExists(projectRoot) {
+		// Register it in state and return
+		wt := Worktree{
+			Name:        branch,
+			Branch:      branch,
+			ProjectRoot: projectRoot,
+			IsDefault:   false,
+			HeadCommit:  ResolveHeadCommit(projectRoot, ws.Owner),
+		}
+		ws.Worktrees = append(ws.Worktrees, wt)
+		if err := p.persistState(store, workspaceName, ws); err != nil {
+			return nil, err
+		}
+		return &WorktreeAddResult{
+			WorkspaceName: workspaceName,
+			Branch:        branch,
+			ProjectRoot:   projectRoot,
+			Created:       false,
+		}, nil
+	}
+
+	// Ensure .worktrees/ directory exists
+	worktreesDir := filepath.Join(ws.RepoRoot, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
+		return nil, fmt.Errorf("create .worktrees directory: %w", err)
+	}
+
+	// Fetch the branch from origin
+	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
+	p.fetchBranch(ws.BareRoot, branch, ws.Owner)
+
+	// Create the worktree
+	if err := p.addWorktree(ws.BareRoot, projectRoot, branch, ws.Owner); err != nil {
+		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, workspaceName, ws)
+		return nil, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "git worktree add failed",
+			Detail:  err.Error(),
+		}
+	}
+
+	// Append worktree entry to the aggregate
+	wt := Worktree{
+		Name:        branch,
+		Branch:      branch,
+		ProjectRoot: projectRoot,
+		IsDefault:   false,
+		HeadCommit:  ResolveHeadCommit(projectRoot, ws.Owner),
+	}
+	ws.Worktrees = append(ws.Worktrees, wt)
+	p.recordWorkspaceEvent(ws, EventWorktreeCreated, branch)
+
+	if err := p.persistState(store, workspaceName, ws); err != nil {
+		return nil, err
+	}
+
+	slog.Info("worktree added", "workspace", workspaceName, "branch", branch, "project_root", projectRoot)
+
+	return &WorktreeAddResult{
+		WorkspaceName: workspaceName,
+		Branch:        branch,
+		ProjectRoot:   projectRoot,
+		Created:       true,
+	}, nil
+}
+
 // startIDEForWorktree allocates a port, starts the IDE adapter, and updates instance state.
 func (p *Provisioner) startIDEForWorktree(ws *Workspace, worktreeName, worktreePath string) {
 	if p.IDEAdapter == nil || p.PortAllocator == nil {

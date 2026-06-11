@@ -1870,6 +1870,192 @@ func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
 	}
 }
 
+// --- AddWorktree tests ---
+
+func TestAddWorktree_NotFound(t *testing.T) {
+	store := newMemStore()
+	p := &Provisioner{}
+
+	_, err := p.AddWorktree(store, "nonexistent", "feat/x")
+	if err == nil {
+		t.Fatal("expected error for missing workspace")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != ErrNotFound {
+		t.Fatalf("expected NOT_FOUND, got %s", pe.Code)
+	}
+}
+
+func TestAddWorktree_IdempotentFromState(t *testing.T) {
+	store := newMemStore()
+	store.instances["myws"] = &Workspace{
+		RepoRoot: "/tmp/fake/repo",
+		BareRoot: "/tmp/fake/repo/.bare",
+		Owner:    "testuser",
+		Worktrees: []Worktree{
+			{Name: "feat/bar", Branch: "feat/bar", ProjectRoot: "/tmp/fake/repo/.worktrees/feat/bar", IsDefault: false},
+		},
+	}
+	p := &Provisioner{}
+
+	result, err := p.AddWorktree(store, "myws", "feat/bar")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Created {
+		t.Fatal("expected Created=false for idempotent return")
+	}
+	if result.ProjectRoot != "/tmp/fake/repo/.worktrees/feat/bar" {
+		t.Fatalf("unexpected project root: %s", result.ProjectRoot)
+	}
+	if result.WorkspaceName != "myws" {
+		t.Fatalf("unexpected workspace name: %s", result.WorkspaceName)
+	}
+}
+
+func TestAddWorktree_RealGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+	addUpstreamBranch(t, dir, "feat/new-feature", "feature.txt", "# feature\n")
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	// First provision the workspace (bare clone + default worktree)
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:    "myrepo",
+			VCS:     VCSTarget{Host: "github.com", Repo: "org/myrepo", CloneURL: upstreamBare},
+			PatName: "gh-token",
+			Owner:   currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+	ws, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+	if ws.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", ws.Status)
+	}
+
+	// Now add a worktree for the feature branch
+	result, err := p.AddWorktree(store, "myrepo", "feat/new-feature")
+	if err != nil {
+		t.Fatalf("AddWorktree failed: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("expected Created=true for new worktree")
+	}
+	expectedRoot := DeriveProjectRoot(ws.RepoRoot, "feat/new-feature")
+	if result.ProjectRoot != expectedRoot {
+		t.Fatalf("expected project root %s, got %s", expectedRoot, result.ProjectRoot)
+	}
+
+	// Verify the worktree directory exists on disk
+	if !worktreeExists(result.ProjectRoot) {
+		t.Fatal("worktree directory does not exist on disk")
+	}
+
+	// Verify the feature file exists in the worktree
+	featureFile := filepath.Join(result.ProjectRoot, "feature.txt")
+	if _, err := os.Stat(featureFile); err != nil {
+		t.Fatalf("feature.txt not found in worktree: %v", err)
+	}
+
+	// Verify worktree was appended to aggregate state
+	updated := store.instances["myrepo"]
+	found := false
+	for _, wt := range updated.Worktrees {
+		if wt.Branch == "feat/new-feature" {
+			found = true
+			if wt.IsDefault {
+				t.Fatal("non-default worktree should have IsDefault=false")
+			}
+			if wt.ProjectRoot != expectedRoot {
+				t.Fatalf("worktree project root mismatch: %s", wt.ProjectRoot)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("worktree not found in aggregate state")
+	}
+
+	// Verify events were emitted
+	hasCreating := false
+	hasCreated := false
+	for _, ev := range updated.Events {
+		if ev.Event == string(EventWorktreeCreating) && strings.Contains(ev.Detail, "feat/new-feature") {
+			hasCreating = true
+		}
+		if ev.Event == string(EventWorktreeCreated) && strings.Contains(ev.Detail, "feat/new-feature") {
+			hasCreated = true
+		}
+	}
+	if !hasCreating {
+		t.Fatal("missing worktree_creating event")
+	}
+	if !hasCreated {
+		t.Fatal("missing worktree_created event")
+	}
+}
+
+func TestAddWorktree_IdempotentSecondCall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepo(t, dir)
+	addUpstreamBranch(t, dir, "bugfix", "fix.txt", "# fix\n")
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	// Provision workspace
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:    "myrepo",
+			VCS:     VCSTarget{Host: "github.com", Repo: "org/myrepo", CloneURL: upstreamBare},
+			PatName: "gh-token",
+			Owner:   currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+	_, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// First add
+	result1, err := p.AddWorktree(store, "myrepo", "bugfix")
+	if err != nil {
+		t.Fatalf("first AddWorktree failed: %v", err)
+	}
+	if !result1.Created {
+		t.Fatal("first call should return Created=true")
+	}
+
+	// Second add (idempotent — found in state)
+	result2, err := p.AddWorktree(store, "myrepo", "bugfix")
+	if err != nil {
+		t.Fatalf("second AddWorktree failed: %v", err)
+	}
+	if result2.Created {
+		t.Fatal("second call should return Created=false")
+	}
+	if result2.ProjectRoot != result1.ProjectRoot {
+		t.Fatalf("project root mismatch: %s vs %s", result1.ProjectRoot, result2.ProjectRoot)
+	}
+}
+
 // --- Test helpers for template tests ---
 
 func getHeadCommitMessage(t *testing.T, projectRoot string) string {

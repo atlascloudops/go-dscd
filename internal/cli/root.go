@@ -72,6 +72,7 @@ func NewRootCommand(version string) *cobra.Command {
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
 		newWorkspaceSyncCmd(fs, al.get()),
+		newWorkspaceWorktreeCmd(fs, al.get()),
 	)
 
 	credentials := &cobra.Command{
