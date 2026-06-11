@@ -223,6 +223,60 @@ func TestWorkspaceListItemFromInstance_Basic(t *testing.T) {
 	}
 }
 
+func TestWorkspaceListItemFromInstance_IDEPort(t *testing.T) {
+	// IDE port is surfaced when the default worktree has a ready IDE.
+	inst := &Workspace{
+		Name:   "myrepo",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/myrepo"},
+		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {Adapter: "openvscode-server", Port: 9100, Status: StatusReady},
+		},
+	}
+	item := WorkspaceListItemFromInstance(inst)
+	if item.IDEPort != 9100 {
+		t.Errorf("expected ide_port=9100, got %d", item.IDEPort)
+	}
+}
+
+func TestWorkspaceListItemFromInstance_IDEPortNotReady(t *testing.T) {
+	// IDE port is blank when IDE is not ready.
+	inst := &Workspace{
+		Name:   "myrepo",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/myrepo"},
+		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {Adapter: "openvscode-server", Port: 9100, Status: StatusPending},
+		},
+	}
+	item := WorkspaceListItemFromInstance(inst)
+	if item.IDEPort != 0 {
+		t.Errorf("expected ide_port=0 for non-ready IDE, got %d", item.IDEPort)
+	}
+}
+
+func TestWorkspaceListItemFromInstance_NoIDE(t *testing.T) {
+	// IDE port is blank when no IDE exists.
+	inst := &Workspace{
+		Name:   "myrepo",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/myrepo"},
+		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
+		},
+	}
+	item := WorkspaceListItemFromInstance(inst)
+	if item.IDEPort != 0 {
+		t.Errorf("expected ide_port=0 when no IDE, got %d", item.IDEPort)
+	}
+}
+
 func TestWorkspaceListItemFromInstance_JSON(t *testing.T) {
 	inst := &Workspace{
 		Name:   "myrepo",

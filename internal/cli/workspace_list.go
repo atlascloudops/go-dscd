@@ -36,10 +36,16 @@ func newWorkspaceListCmd(store domain.StateStore) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tLIFECYCLE\tREPO\tWORKTREES")
+			fmt.Fprintln(w, "NAME\tSTATUS\tREPO\tWORKTREES\tIDE")
 			for _, ws := range list {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
-					ws.Name, ws.Status, ws.Repo.Slug, len(ws.Worktrees))
+				ideCol := ""
+				if defWt := ws.DefaultWorktree(); defWt != nil {
+					if ide := ws.IDEForWorktree(defWt.Name); ide != nil && ide.Status == domain.StatusReady {
+						ideCol = fmt.Sprintf(":%d", ide.Port)
+					}
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
+					ws.Name, ws.Status, ws.Repo.Slug, len(ws.Worktrees), ideCol)
 			}
 			w.Flush()
 			return nil

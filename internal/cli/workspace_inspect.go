@@ -54,15 +54,24 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 0)
 			}
 
+			// Header: repo-level fields
 			fmt.Fprintf(os.Stdout, "Name:            %s\n", ws.Name)
 			fmt.Fprintf(os.Stdout, "Repo:            %s/%s\n", ws.Repo.Host, ws.Repo.Slug)
 			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", ws.BareRoot)
-			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", ws.Status)
+			if ws.ProvisionedAt != nil {
+				fmt.Fprintf(os.Stdout, "Provisioned:     %s\n", ws.ProvisionedAt.Format("2006-01-02T15:04:05Z"))
+			}
+			if ws.LastSyncedAt != nil {
+				fmt.Fprintf(os.Stdout, "Last Synced:     %s\n", ws.LastSyncedAt.Format("2006-01-02T15:04:05Z"))
+			}
 			if inspectData.TemplateRepo != "" {
 				fmt.Fprintf(os.Stdout, "Template:        %s\n", inspectData.TemplateRepo)
 			}
-			fmt.Fprintf(os.Stdout, "Worktree Count:  %d\n", inspectData.WorktreeCount)
+			if ws.LastError != nil {
+				fmt.Fprintf(os.Stdout, "Last Error:      %s\n", *ws.LastError)
+			}
 
+			// Worktrees table
 			if len(ws.Worktrees) > 0 {
 				fmt.Fprintf(os.Stdout, "\nWorktrees:\n")
 				fmt.Fprintf(os.Stdout, "  %-16s %-16s %s\n", "NAME", "BRANCH", "PROJECT ROOT")
@@ -71,6 +80,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				}
 			}
 
+			// IDE table
 			if len(ws.IDE) > 0 {
 				fmt.Fprintf(os.Stdout, "\nIDE:\n")
 				fmt.Fprintf(os.Stdout, "  %-16s %-20s %-8s %s\n", "WORKTREE", "ADAPTER", "PORT", "STATUS")
@@ -79,6 +89,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				}
 			}
 
+			// Event history (last 10)
 			if len(ws.Events) > 0 {
 				fmt.Fprintf(os.Stdout, "\nEvents:\n")
 				start := 0
@@ -93,15 +104,6 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 						fmt.Fprintf(os.Stdout, "  %s  %s\n", ts, ev.Event)
 					}
 				}
-			}
-			if ws.LastSyncedAt != nil {
-				fmt.Fprintf(os.Stdout, "Last Synced:     %s\n", ws.LastSyncedAt.Format("2006-01-02T15:04:05Z"))
-			}
-			if ws.ProvisionedAt != nil {
-				fmt.Fprintf(os.Stdout, "Provisioned:     %s\n", ws.ProvisionedAt.Format("2006-01-02T15:04:05Z"))
-			}
-			if ws.LastError != nil {
-				fmt.Fprintf(os.Stdout, "Last Error:      %s\n", *ws.LastError)
 			}
 			return nil
 		},

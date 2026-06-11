@@ -61,22 +61,30 @@ type WorkspaceInspectData struct {
 
 // WorkspaceListItem is the per-workspace entry in a list response.
 type WorkspaceListItem struct {
-	Name           string        `json:"name"`
-	Repo           RepoInfo      `json:"repo"`
-	Status         Status        `json:"status,omitempty"`
-	WorktreeCount  int           `json:"worktree_count"`
-	Events         []EventRecord `json:"events,omitempty"`
+	Name          string        `json:"name"`
+	Repo          RepoInfo      `json:"repo"`
+	Status        Status        `json:"status,omitempty"`
+	WorktreeCount int           `json:"worktree_count"`
+	IDEPort       int           `json:"ide_port,omitempty"`
+	Events        []EventRecord `json:"events,omitempty"`
 }
 
 // WorkspaceListItemFromInstance builds a WorkspaceListItem from a Workspace.
 func WorkspaceListItemFromInstance(ws *Workspace) WorkspaceListItem {
-	return WorkspaceListItem{
+	item := WorkspaceListItem{
 		Name:          ws.Name,
 		Repo:          ws.Repo,
 		Status:        ws.Status,
 		WorktreeCount: len(ws.Worktrees),
 		Events:        ws.Events,
 	}
+	// Surface the default worktree's IDE port when it is ready.
+	if defWt := ws.DefaultWorktree(); defWt != nil {
+		if ide := ws.IDEForWorktree(defWt.Name); ide != nil && ide.Status == StatusReady {
+			item.IDEPort = ide.Port
+		}
+	}
+	return item
 }
 
 func OkResponse(command string, data interface{}) Response {
