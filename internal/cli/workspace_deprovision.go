@@ -9,11 +9,22 @@ import (
 
 func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	var force bool
+	var worktree string
+	var all bool // backward-compat: accepted but ignored (remove-all is the default)
 
 	cmd := &cobra.Command{
 		Use:   "deprovision <name>",
-		Short: "Remove a workspace",
-		Args:  cobra.ExactArgs(1),
+		Short: "Remove a workspace or a single worktree",
+		Long: `Remove a workspace or a single worktree.
+
+By default, removes the entire workspace: stops all IDE instances, removes
+all worktrees, removes the bare clone and repo container, and deletes the
+state entry.
+
+With --worktree <branch>, removes only the specified worktree from the
+workspace aggregate. The default worktree cannot be removed this way —
+deprovision the entire workspace instead.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			provisioner := &domain.Provisioner{
@@ -22,7 +33,15 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.Act
 				ActivityLog:   activityLog,
 			}
 
-			result, err := provisioner.Deprovision(store, name, force)
+			var result *domain.DeprovisionResult
+			var err error
+
+			if worktree != "" {
+				result, err = provisioner.DeprovisionWorktree(store, name, worktree, force)
+			} else {
+				result, err = provisioner.Deprovision(store, name, force)
+			}
+
 			if err != nil {
 				if pe, ok := err.(*domain.ProvisionError); ok {
 					resp := domain.ErrorResponse("workspace.deprovision", domain.ErrorInfo{
@@ -51,6 +70,9 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.Act
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Delete even if worktrees have uncommitted changes")
+	cmd.Flags().StringVar(&worktree, "worktree", "", "Remove only the specified worktree (by branch name)")
+	cmd.Flags().BoolVar(&all, "all", false, "Remove entire workspace (default behavior, kept for backward compatibility)")
+	cmd.Flags().MarkHidden("all")
 
 	return cmd
 }

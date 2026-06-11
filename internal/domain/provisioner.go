@@ -47,7 +47,7 @@ func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Work
 	}
 
 	// Idempotency check — if worktree already exists, return ready
-	projectRoot := params.ProjectRoot
+	projectRoot := params.ProjectRoot()
 	if worktreeExists(projectRoot) {
 		return p.returnIdempotent(store, params)
 	}
@@ -57,7 +57,7 @@ func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Work
 		return p.provisionTemplate(store, params)
 	}
 
-	bareExists := dirExists(params.BareRoot)
+	bareExists := dirExists(params.BareRoot())
 
 	if !bareExists {
 		return p.provisionBareCloneAndDefault(store, params)
@@ -72,8 +72,8 @@ func newWorkspaceFromParams(params ProvisionParams, now *time.Time) *Workspace {
 	return &Workspace{
 		Name:          spec.Name,
 		Repo:          RepoInfo{Host: spec.VCS.Host, Slug: spec.VCS.Repo, CloneURL: spec.VCS.CloneURL},
-		RepoRoot:      params.RepoRoot,
-		BareRoot:      params.BareRoot,
+		RepoRoot:      params.RepoRoot(),
+		BareRoot:      params.BareRoot(),
 		Owner:         spec.Owner,
 		PatName:       spec.PatName,
 		Template:      spec.Template,
@@ -88,8 +88,8 @@ func (ws *Workspace) updateFromParams(params ProvisionParams) {
 	ws.Owner = spec.Owner
 	ws.PatName = spec.PatName
 	ws.Template = spec.Template
-	ws.RepoRoot = params.RepoRoot
-	ws.BareRoot = params.BareRoot
+	ws.RepoRoot = params.RepoRoot()
+	ws.BareRoot = params.BareRoot()
 }
 
 // returnIdempotent handles the case where the worktree already exists.
@@ -110,7 +110,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 			p.recordWorkspaceEvent(ws, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
 		// Hydrate before resolving head commit
-		if dirExists(params.BareRoot) {
+		if dirExists(params.BareRoot()) {
 			p.hydrateWorktrees(ws)
 		}
 		// Update default worktree head commit
@@ -118,12 +118,12 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 			wt.HeadCommit = ResolveHeadCommit(wt.ProjectRoot, ws.Owner)
 		}
 		// Ensure default worktree is registered
-		if ws.DefaultWorktree() == nil && params.ProjectRoot != "" {
+		if ws.DefaultWorktree() == nil && params.ProjectRoot() != "" {
 			ws.Worktrees = append(ws.Worktrees, Worktree{
 				Name:        "default",
-				ProjectRoot: params.ProjectRoot,
+				ProjectRoot: params.ProjectRoot(),
 				IsDefault:   true,
-				HeadCommit:  ResolveHeadCommit(params.ProjectRoot, ws.Owner),
+				HeadCommit:  ResolveHeadCommit(params.ProjectRoot(), ws.Owner),
 			})
 		}
 
@@ -131,7 +131,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 		if p.IDEAdapter != nil {
 			defaultIDE := ws.IDEForWorktree("default")
 			if defaultIDE == nil || defaultIDE.Status != StatusReady {
-				p.startIDEForWorktree(ws, "default", params.ProjectRoot)
+				p.startIDEForWorktree(ws, "default", params.ProjectRoot())
 			} else {
 				p.healthCheckIDEForWorktree(ws, "default")
 			}
@@ -154,12 +154,12 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 	p.recordWorkspaceEvent(ws, EventCloneStarted, spec.VCS.CloneURL)
 
 	// 1. mkdir -p <repo_root>
-	if err := os.MkdirAll(params.RepoRoot, 0755); err != nil {
+	if err := os.MkdirAll(params.RepoRoot(), 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
 	}
 
 	// 2. git clone --bare <clone_url> <bare_root>
-	if err := p.bareClone(spec.VCS.CloneURL, params.BareRoot, spec.Owner); err != nil {
+	if err := p.bareClone(spec.VCS.CloneURL, params.BareRoot(), spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -173,7 +173,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 	p.recordWorkspaceEvent(ws, EventCloneCompleted, "")
 
 	// 3. Resolve default branch
-	defaultBranch, err := resolveDefaultBranch(params.BareRoot, spec.Owner)
+	defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 	if err != nil {
 		slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
 		defaultBranch = "main"
@@ -183,7 +183,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 	worktreeName := "default"
 	isDefault := true
 	branch := defaultBranch
-	worktreePath := params.ProjectRoot
+	worktreePath := params.ProjectRoot()
 
 	if parts := strings.SplitN(spec.Name, "/", 2); len(parts) == 2 {
 		worktreeName = parts[1]
@@ -193,7 +193,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 
 	// 5. git -C <bare_root> worktree add <path> <branch>
 	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
-	if err := p.addWorktree(params.BareRoot, worktreePath, branch, spec.Owner); err != nil {
+	if err := p.addWorktree(params.BareRoot(), worktreePath, branch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -237,8 +237,8 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 
 	// 1. Clone template into a temporary directory
 	p.recordWorkspaceEvent(ws, EventTemplateCloneStarted, tmpl.CloneURL)
-	tmpDir := filepath.Join(params.RepoRoot, ".template-tmp")
-	if err := os.MkdirAll(params.RepoRoot, 0755); err != nil {
+	tmpDir := filepath.Join(params.RepoRoot(), ".template-tmp")
+	if err := os.MkdirAll(params.RepoRoot(), 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
 	}
 
@@ -259,7 +259,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 	os.RemoveAll(filepath.Join(tmpDir, ".git"))
 
 	// 3. Init a scratch repo, copy template files in, and commit
-	scratchDir := filepath.Join(params.RepoRoot, ".template-scratch")
+	scratchDir := filepath.Join(params.RepoRoot(), ".template-scratch")
 	if err := p.gitInit(scratchDir, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git init (scratch) failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
@@ -303,7 +303,7 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 	}
 
 	// 4. Clone bare from scratch, then create worktree
-	if err := p.bareCloneLocal(scratchDir, params.BareRoot, spec.Owner); err != nil {
+	if err := p.bareCloneLocal(scratchDir, params.BareRoot(), spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare (from scratch) failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -318,15 +318,15 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 	os.RemoveAll(scratchDir)
 
 	// Remove the "origin" remote that clone --bare created (points to scratch)
-	p.gitRemoteRemove(params.BareRoot, "origin", spec.Owner)
+	p.gitRemoteRemove(params.BareRoot(), "origin", spec.Owner)
 
-	defaultBranch, err := resolveDefaultBranch(params.BareRoot, spec.Owner)
+	defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 	if err != nil {
 		defaultBranch = "main"
 	}
 
-	worktreePath := filepath.Join(params.RepoRoot, "default")
-	if err := p.addWorktree(params.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
+	worktreePath := filepath.Join(params.RepoRoot(), "default")
+	if err := p.addWorktree(params.BareRoot(), worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -342,10 +342,10 @@ func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams
 	p.recordWorkspaceEvent(ws, EventWorktreeCreated, defaultBranch)
 
 	// 5. Configure remotes on the bare repo
-	p.gitRemoteAdd(params.BareRoot, "template", tmpl.CloneURL, spec.Owner)
-	p.gitRemoteSetPushURL(params.BareRoot, "template", "no_push", spec.Owner)
+	p.gitRemoteAdd(params.BareRoot(), "template", tmpl.CloneURL, spec.Owner)
+	p.gitRemoteSetPushURL(params.BareRoot(), "template", "no_push", spec.Owner)
 	if spec.VCS.CloneURL != "" {
-		p.gitRemoteAdd(params.BareRoot, "origin", spec.VCS.CloneURL, spec.Owner)
+		p.gitRemoteAdd(params.BareRoot(), "origin", spec.VCS.CloneURL, spec.Owner)
 	}
 
 	// Populate worktrees
@@ -390,7 +390,7 @@ func (p *Provisioner) provisionWorktreeFromExisting(store StateStore, params Pro
 
 	if isDefault {
 		// Resolve default branch for default worktree
-		defaultBranch, err := resolveDefaultBranch(params.BareRoot, spec.Owner)
+		defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 		if err != nil {
 			slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
 			defaultBranch = "main"
@@ -398,10 +398,10 @@ func (p *Provisioner) provisionWorktreeFromExisting(store StateStore, params Pro
 		branch = defaultBranch
 	}
 
-	worktreePath := params.ProjectRoot
+	worktreePath := params.ProjectRoot()
 
 	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
-	if err := p.addWorktree(params.BareRoot, worktreePath, branch, spec.Owner); err != nil {
+	if err := p.addWorktree(params.BareRoot(), worktreePath, branch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
 		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
 		ws.LastError = &errMsg
@@ -602,11 +602,14 @@ func (p *Provisioner) ffPull(worktreePath, branch, owner string) error {
 
 // DeprovisionResult holds the outcome of a deprovision operation.
 type DeprovisionResult struct {
-	Removed []string `json:"removed"` // workspace names removed
-	Message string   `json:"message"`
+	Removed          []string `json:"removed"`                     // workspace names removed
+	RemovedWorktrees []string `json:"removed_worktrees,omitempty"` // worktree names removed
+	Message          string   `json:"message"`
 }
 
-// Deprovision removes a workspace and all its worktrees.
+// Deprovision removes an entire workspace aggregate: stops all IDE instances,
+// removes all worktrees, removes the bare clone, removes the repo container
+// directory, and deletes the state entry.
 func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*DeprovisionResult, error) {
 	instances, err := store.Load()
 	if err != nil {
@@ -644,8 +647,11 @@ func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*D
 		p.stopIDEForWorktree(ws, wtName, wtPath)
 	}
 
-	// Determine if this is a child workspace (name has "/") or a root workspace.
-	isChild := strings.Contains(name, "/")
+	// Collect worktree names for the result
+	var removedWorktrees []string
+	for _, wt := range ws.Worktrees {
+		removedWorktrees = append(removedWorktrees, wt.Name)
+	}
 
 	// Remove all worktrees via git (non-default first, default last)
 	for _, wt := range ws.Worktrees {
@@ -661,15 +667,12 @@ func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*D
 		_ = p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, force)
 	}
 
-	// Remove bare clone and repo container only for root workspaces.
-	// Child workspaces (repo/worktree) share the bare clone with the parent.
-	if !isChild {
-		if ws.BareRoot != "" {
-			os.RemoveAll(ws.BareRoot)
-		}
-		if ws.RepoRoot != "" {
-			os.RemoveAll(ws.RepoRoot)
-		}
+	// Remove bare clone and repo container directory
+	if ws.BareRoot != "" {
+		os.RemoveAll(ws.BareRoot)
+	}
+	if ws.RepoRoot != "" {
+		os.RemoveAll(ws.RepoRoot)
 	}
 
 	// Remove state entry
@@ -691,18 +694,98 @@ func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*D
 		suffix = " (forced)"
 	}
 	return &DeprovisionResult{
-		Removed: []string{name},
-		Message: fmt.Sprintf("Workspace '%s' removed%s.", name, suffix),
+		Removed:          []string{name},
+		RemovedWorktrees: removedWorktrees,
+		Message:          fmt.Sprintf("Workspace '%s' removed%s.", name, suffix),
 	}, nil
 }
 
-// DeprovisionAll removes all worktrees, the bare clone, and the repo container.
-// In the new aggregate model this delegates to Deprovision.
-func (p *Provisioner) DeprovisionAll(store StateStore, repoName string, force bool) (*DeprovisionResult, error) {
-	return p.Deprovision(store, repoName, force)
+// DeprovisionWorktree removes a single worktree from a workspace aggregate by branch name.
+// It stops the IDE instance for that worktree, runs `git worktree remove`, removes the
+// worktree entry from the slice and the IDE entry from the map, and saves the updated aggregate.
+// The default worktree cannot be removed — users must deprovision the entire workspace instead.
+func (p *Provisioner) DeprovisionWorktree(store StateStore, name, branch string, force bool) (*DeprovisionResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[name]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("workspace '%s' not found", name),
+		}
+	}
+
+	// Find the worktree by branch name
+	wt := ws.FindWorktreeByBranch(branch)
+	if wt == nil {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("worktree for branch '%s' not found in workspace '%s'", branch, name),
+		}
+	}
+
+	// Cannot remove the default worktree
+	if wt.IsDefault {
+		return nil, &ProvisionError{
+			Code:    ErrCannotDeleteDefault,
+			Message: fmt.Sprintf("Cannot remove the default worktree. Use 'workspace deprovision %s' to remove the entire workspace.", name),
+		}
+	}
+
+	// Guard: check for uncommitted changes (unless --force)
+	if !force {
+		dirty, dirtyErr := IsWorktreeDirty(wt.ProjectRoot, ws.Owner)
+		if dirtyErr == nil && dirty {
+			return nil, &ProvisionError{
+				Code:    ErrWorktreeDirty,
+				Message: fmt.Sprintf("Worktree '%s' has uncommitted changes. Use --force to delete.", wt.Name),
+			}
+		}
+	}
+
+	// Stop IDE for this worktree
+	p.stopIDEForWorktree(ws, wt.Name, wt.ProjectRoot)
+
+	// Remove the worktree via git
+	wtName := wt.Name
+	if err := p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, force); err != nil {
+		slog.Error("git worktree remove failed", "workspace", name, "worktree", wtName, "error", err)
+	}
+
+	// Remove worktree entry from the aggregate
+	ws.RemoveWorktreeByName(wtName)
+	ws.RemoveIDEForWorktree(wtName)
+
+	// Save the updated aggregate
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+		instances[name] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, fmt.Errorf("update state: %w", err)
+	}
+
+	slog.Info("worktree removed", "workspace", name, "worktree", wtName, "phase", "deprovision")
+
+	suffix := ""
+	if force {
+		suffix = " (forced)"
+	}
+	return &DeprovisionResult{
+		Removed:          []string{name},
+		RemovedWorktrees: []string{wtName},
+		Message:          fmt.Sprintf("Worktree '%s' removed from workspace '%s'%s.", wtName, name, suffix),
+	}, nil
 }
 
-// Prune removes all clean non-default worktrees for a given workspace (repo).
+// Prune removes all clean non-default worktrees within a single workspace aggregate.
+// It operates on the Worktrees slice, not on separate state entries.
 func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, error) {
 	instances, err := store.Load()
 	if err != nil {
@@ -722,94 +805,69 @@ func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, er
 		Skipped: []PruneSkipped{},
 	}
 
-	// Find all child workspace entries (repoName/xxx) — these are non-default worktrees.
-	prefix := repoName + "/"
-	var childNames []string
-	for name := range instances {
-		if strings.HasPrefix(name, prefix) {
-			childNames = append(childNames, name)
+	// Collect non-default worktrees from the aggregate's Worktrees slice
+	var nonDefaultWorktrees []Worktree
+	for _, wt := range ws.Worktrees {
+		if !wt.IsDefault {
+			nonDefaultWorktrees = append(nonDefaultWorktrees, wt)
 		}
 	}
 
-	if len(childNames) == 0 {
-		// Also check for non-default worktrees within the aggregate itself (legacy path)
-		hasNonDefault := false
-		for _, wt := range ws.Worktrees {
-			if !wt.IsDefault {
-				hasNonDefault = true
-				break
-			}
-		}
-		if !hasNonDefault {
-			result.Message = "No non-default worktrees to prune."
-			return result, nil
-		}
+	if len(nonDefaultWorktrees) == 0 {
+		result.Message = "No non-default worktrees to prune."
+		return result, nil
 	}
 
-	// Prune child workspace entries (separate state entries for non-default worktrees)
-	var prunedKeys []string
-	for _, childName := range childNames {
-		childWs := instances[childName]
-		if childWs == nil {
-			continue
-		}
-
-		// Get the worktree project root from the child workspace's worktrees
-		var projectRoot string
-		if len(childWs.Worktrees) > 0 {
-			projectRoot = childWs.Worktrees[0].ProjectRoot
-		}
-
-		if projectRoot != "" {
-			dirty, dirtyErr := IsWorktreeDirty(projectRoot, childWs.Owner)
+	// Prune each non-default worktree within the aggregate
+	var prunedNames []string
+	for _, wt := range nonDefaultWorktrees {
+		if wt.ProjectRoot != "" {
+			dirty, dirtyErr := IsWorktreeDirty(wt.ProjectRoot, ws.Owner)
 			if dirtyErr == nil && dirty {
 				result.Skipped = append(result.Skipped, PruneSkipped{
-					Name:   childName,
+					Name:   wt.Name,
 					Reason: "uncommitted changes",
 				})
 				continue
 			}
 		}
 
-		// Stop IDE for the child workspace
-		for wtName := range childWs.IDE {
-			wtPath := ""
-			if wt := childWs.FindWorktree(wtName); wt != nil {
-				wtPath = wt.ProjectRoot
-			}
-			p.stopIDEForWorktree(childWs, wtName, wtPath)
-		}
+		// Stop IDE for this worktree
+		p.stopIDEForWorktree(ws, wt.Name, wt.ProjectRoot)
 
 		// Remove the worktree via git
-		if projectRoot != "" {
-			if err := p.removeWorktree(ws.BareRoot, projectRoot, ws.Owner, false); err != nil {
+		if wt.ProjectRoot != "" {
+			if err := p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, false); err != nil {
 				result.Skipped = append(result.Skipped, PruneSkipped{
-					Name:   childName,
+					Name:   wt.Name,
 					Reason: fmt.Sprintf("remove failed: %v", err),
 				})
 				continue
 			}
 		}
 
-		result.Pruned = append(result.Pruned, childName)
-		prunedKeys = append(prunedKeys, childName)
-		slog.Info("worktree pruned", "workspace", repoName, "worktree", childName, "phase", "prune")
+		result.Pruned = append(result.Pruned, wt.Name)
+		prunedNames = append(prunedNames, wt.Name)
+		slog.Info("worktree pruned", "workspace", repoName, "worktree", wt.Name, "phase", "prune")
 	}
 
 	if ws.BareRoot != "" {
 		p.pruneWorktrees(ws.BareRoot, ws.Owner)
 	}
 
-	// Remove pruned child workspace entries from state
-	if len(prunedKeys) > 0 {
+	// Update the aggregate: remove pruned worktrees from slice and IDE map
+	if len(prunedNames) > 0 {
+		for _, name := range prunedNames {
+			ws.RemoveWorktreeByName(name)
+			ws.RemoveIDEForWorktree(name)
+		}
+
 		if err := store.WithLock(func() error {
 			instances, err := store.Load()
 			if err != nil {
 				return err
 			}
-			for _, key := range prunedKeys {
-				delete(instances, key)
-			}
+			instances[repoName] = ws
 			return store.Save(instances)
 		}); err != nil {
 			return nil, fmt.Errorf("update state: %w", err)
@@ -819,9 +877,7 @@ func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, er
 	prunedCount := len(result.Pruned)
 	skippedCount := len(result.Skipped)
 
-	if len(childNames) == 0 {
-		result.Message = "No non-default worktrees to prune."
-	} else if skippedCount == 0 {
+	if skippedCount == 0 {
 		result.Message = fmt.Sprintf("%d worktree%s pruned.", prunedCount, pluralS(prunedCount))
 	} else {
 		result.Message = fmt.Sprintf("%d worktree%s pruned, %d skipped.", prunedCount, pluralS(prunedCount), skippedCount)

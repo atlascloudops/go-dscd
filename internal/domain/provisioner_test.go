@@ -44,6 +44,47 @@ func (m *memStore) WithLock(fn func() error) error {
 	return fn()
 }
 
+// testWorkspace is a test helper that sets up workspace paths following the
+// server-owned convention: <workspaceRoot>/<host>/<repo>/
+type testWorkspace struct {
+	WorkspaceRoot string // temp dir root
+	RepoRoot      string // <workspaceRoot>/<host>/<repo>
+	BareRoot      string // <repoRoot>/.bare
+	DefaultRoot   string // <repoRoot>/default
+}
+
+// setupTestWorkspace creates a workspace layout for VCS-backed tests.
+// host/repo are used to derive paths, matching what ProvisionParams methods derive.
+func setupTestWorkspace(t *testing.T, host, repo string) testWorkspace {
+	t.Helper()
+	dir := t.TempDir()
+	repoRoot := DeriveRepoRoot(dir, host, repo)
+	return testWorkspace{
+		WorkspaceRoot: dir,
+		RepoRoot:      repoRoot,
+		BareRoot:      DeriveBareRoot(repoRoot),
+		DefaultRoot:   DeriveProjectRoot(repoRoot, "default"),
+	}
+}
+
+// setupTestLocalWorkspace creates a workspace layout for template-only tests.
+func setupTestLocalWorkspace(t *testing.T, name string) testWorkspace {
+	t.Helper()
+	dir := t.TempDir()
+	repoRoot := DeriveLocalRepoRoot(dir, name)
+	return testWorkspace{
+		WorkspaceRoot: dir,
+		RepoRoot:      repoRoot,
+		BareRoot:      DeriveBareRoot(repoRoot),
+		DefaultRoot:   DeriveProjectRoot(repoRoot, "default"),
+	}
+}
+
+// worktreeRoot returns the path for a named worktree under this workspace.
+func (tw testWorkspace) worktreeRoot(name string) string {
+	return DeriveProjectRoot(tw.RepoRoot, name)
+}
+
 // runGit is a test helper that runs git commands and fails the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -321,13 +362,10 @@ func TestValidateName_AcceptanceCriteria(t *testing.T) {
 }
 
 func TestProvision_IdempotentWithGitDir(t *testing.T) {
-	dir := t.TempDir()
-	repoRoot := filepath.Join(dir, "repo")
-	projectRoot := filepath.Join(repoRoot, "default")
-	bareRoot := filepath.Join(repoRoot, ".bare")
+	tw := setupTestWorkspace(t, "github.com", "org/repo")
 
 	// Simulate existing worktree with .git directory
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+	os.MkdirAll(filepath.Join(tw.DefaultRoot, ".git"), 0755)
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -335,12 +373,10 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "test",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "org/repo", CloneURL: "https://github.com/org/repo.git"},
 			Owner: "testuser",
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: tw.WorkspaceRoot,
 	}
 
 	inst, err := p.Provision(store, params)
@@ -361,14 +397,12 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 }
 
 func TestProvision_IdempotentWithGitFile(t *testing.T) {
-	dir := t.TempDir()
-	repoRoot := filepath.Join(dir, "repo")
-	projectRoot := filepath.Join(repoRoot, ".worktrees", "feature")
-	bareRoot := filepath.Join(repoRoot, ".bare")
+	tw := setupTestWorkspace(t, "github.com", "org/repo")
+	featureRoot := tw.worktreeRoot("feature")
 
 	// Simulate existing worktree with .git as a file (worktree pointer)
-	os.MkdirAll(projectRoot, 0755)
-	os.WriteFile(filepath.Join(projectRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
+	os.MkdirAll(featureRoot, 0755)
+	os.WriteFile(filepath.Join(featureRoot, ".git"), []byte("gitdir: ../../.bare/worktrees/feature\n"), 0644)
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -376,12 +410,10 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "test/feature",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "org/repo", CloneURL: "https://github.com/org/repo.git"},
 			Owner: "testuser",
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: tw.WorkspaceRoot,
 	}
 
 	inst, err := p.Provision(store, params)
@@ -467,12 +499,10 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	inst, err := p.Provision(store, params)
@@ -524,8 +554,8 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	addUpstreamBranch(t, dir, "feature-vpc", "vpc.tf", "# vpc\n")
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	bareRoot := filepath.Join(repoRoot, ".bare")
-	defaultRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -534,12 +564,10 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	defaultParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: defaultRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, defaultParams)
@@ -552,12 +580,10 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	featureParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo/feature-vpc",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: featureRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	inst, err := p.Provision(store, featureParams)
@@ -612,12 +638,10 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo/feature-vpc",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: featureRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	inst, err := p.Provision(store, params)
@@ -667,9 +691,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 			PatName: "gitlab-token",
 			Owner:   currentUser(),
 		},
-		ProjectRoot: defaultRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	inst, err := p.Provision(store, defaultParams)
 	if err != nil {
@@ -708,9 +730,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 			PatName: "gitlab-token",
 			Owner:   currentUser(),
 		},
-		ProjectRoot: experimentRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	inst2, err := p.Provision(store, expParams)
 	if err != nil {
@@ -788,26 +808,22 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 
 	// --- Step 14-15: Provision multiple worktrees, prune clean ---
 	spikeARoot := filepath.Join(repoRoot, ".worktrees", "spike-a")
-	spikeBRoot := filepath.Join(repoRoot, ".worktrees", "spike-b")
+	_ = filepath.Join(repoRoot, ".worktrees", "spike-b")
 	spikeAParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "ocr-service/spike-a",
-			VCS:   VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: spikeARoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	spikeBParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "ocr-service/spike-b",
-			VCS:   VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: spikeBRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	_, err = p.Provision(store, spikeAParams)
 	if err != nil {
@@ -907,8 +923,8 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	upstreamBare := createUpstreamRepo(t, dir)
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -916,12 +932,10 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	// Step 1: Initial provision
@@ -982,7 +996,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	upstreamBare := createUpstreamRepo(t, dir)
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	bareRoot := filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, ".bare")
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
@@ -991,12 +1005,10 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	// Initial provision
@@ -1041,7 +1053,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	upstreamBare := createUpstreamRepo(t, dir)
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	bareRoot := filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, ".bare")
 	projectRoot := filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
@@ -1050,12 +1062,10 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	// Initial provision
@@ -1102,8 +1112,8 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	addUpstreamBranch(t, dir, "feature-vpc", "vpc.tf", "# vpc\n")
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
-	bareRoot := filepath.Join(repoRoot, ".bare")
-	defaultRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, "default")
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
@@ -1113,12 +1123,10 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	defaultParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: defaultRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	_, err := p.Provision(store, defaultParams)
 	if err != nil {
@@ -1129,12 +1137,10 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	featureParams := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo/feature-vpc",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: featureRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 	_, err = p.Provision(store, featureParams)
 	if err != nil {
@@ -1238,9 +1244,7 @@ func TestProvisionTemplate_BasicFlow(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	inst, err := p.Provision(store, params)
@@ -1302,7 +1306,7 @@ func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1317,9 +1321,7 @@ func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1349,7 +1351,7 @@ func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1366,9 +1368,7 @@ func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1393,7 +1393,7 @@ func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1408,9 +1408,7 @@ func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1434,8 +1432,8 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	templateBare := createTemplateRepo(t, dir)
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
-	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1450,9 +1448,7 @@ func TestProvisionTemplate_Events(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	inst, err := p.Provision(store, params)
@@ -1497,8 +1493,8 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 	templateBare := createTemplateRepo(t, dir)
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
-	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".bare")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1513,9 +1509,7 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	// First provision
@@ -1547,7 +1541,7 @@ func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "my-project")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1562,9 +1556,7 @@ func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
 				Repo:     "org/my-template",
 			},
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1589,7 +1581,7 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "myrepo")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{}
@@ -1597,12 +1589,10 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    bareRoot,
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1687,12 +1677,10 @@ func TestTemplateEvents_DoNotAffectStatus(t *testing.T) {
 // --- Activity log integration tests ---
 
 func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
-	dir := t.TempDir()
-	upstream := createUpstreamRepo(t, dir)
-	repoRoot := filepath.Join(dir, "ws")
-	projectRoot := filepath.Join(repoRoot, "default")
+	tw := setupTestWorkspace(t, "github.com", "test/myrepo")
+	upstream := createUpstreamRepo(t, tw.WorkspaceRoot)
 
-	actLogPath := filepath.Join(dir, "activity.log")
+	actLogPath := filepath.Join(tw.WorkspaceRoot, "activity.log")
 	actLog := NewActivityLog(actLogPath)
 
 	store := newMemStore()
@@ -1703,12 +1691,10 @@ func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "test",
-			VCS:   VCSTarget{CloneURL: upstream},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstream},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    filepath.Join(repoRoot, ".bare"),
+		WorkspaceRoot: tw.WorkspaceRoot,
 	}
 
 	inst, err := p.Provision(store, params)
@@ -1752,7 +1738,7 @@ func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
 	dir := t.TempDir()
 	upstream := createUpstreamRepo(t, dir)
 	repoRoot := filepath.Join(dir, "ws")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	actLogPath := filepath.Join(dir, "activity.log")
 	actLog := NewActivityLog(actLogPath)
@@ -1771,9 +1757,6 @@ func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
 			VCS:   VCSTarget{CloneURL: upstream},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
 	_, err := p.Provision(store, params)
@@ -1802,7 +1785,7 @@ func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
 	dir := t.TempDir()
 	upstream := createUpstreamRepo(t, dir)
 	repoRoot := filepath.Join(dir, "ws")
-	projectRoot := filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, "default")
 
 	store := newMemStore()
 	p := &Provisioner{
@@ -1816,9 +1799,6 @@ func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
 			VCS:   VCSTarget{CloneURL: upstream},
 			Owner: currentUser(),
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
 	inst, err := p.Provision(store, params)
@@ -1831,14 +1811,12 @@ func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
 }
 
 func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	repoRoot := filepath.Join(dir, "repo")
-	projectRoot := filepath.Join(repoRoot, "default")
+	tw := setupTestWorkspace(t, "github.com", "org/repo")
 
 	// Simulate existing worktree with .git directory
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+	os.MkdirAll(filepath.Join(tw.DefaultRoot, ".git"), 0755)
 
-	actLogPath := filepath.Join(dir, "activity.log")
+	actLogPath := filepath.Join(tw.WorkspaceRoot, "activity.log")
 	actLog := NewActivityLog(actLogPath)
 
 	store := newMemStore()
@@ -1849,12 +1827,10 @@ func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myws",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "org/repo", CloneURL: "https://github.com/org/repo.git"},
 			Owner: "testuser",
 		},
-		ProjectRoot: projectRoot,
-		RepoRoot:    repoRoot,
-		BareRoot:    filepath.Join(repoRoot, ".bare"),
+		WorkspaceRoot: tw.WorkspaceRoot,
 	}
 
 	inst, err := p.Provision(store, params)

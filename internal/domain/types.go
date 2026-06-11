@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -48,15 +49,37 @@ type VCSTarget struct {
 	CloneURL string `json:"clone_url,omitempty"`
 }
 
-// ProvisionParams bundles a WorkspaceSpec with server-derived paths for the
-// provision flow. In the current transitional state, paths are provided by the
-// CLI (from frontend JSON). The server-owned-workspace-root story will replace
-// this with server-side derivation.
+// ProvisionParams bundles a WorkspaceSpec with the server-owned workspace root.
+// All filesystem paths (RepoRoot, BareRoot, ProjectRoot) are derived server-side
+// from the workspace root and the spec's VCS identity. Clients never send paths.
 type ProvisionParams struct {
-	Spec        WorkspaceSpec `json:"spec"`
-	RepoRoot    string        `json:"repo_root"`
-	BareRoot    string        `json:"bare_root"`
-	ProjectRoot string        `json:"project_root"`
+	Spec          WorkspaceSpec `json:"spec"`
+	WorkspaceRoot string        `json:"-"` // resolved at CLI startup, not serialized
+}
+
+// RepoRoot derives the repo container directory from the provision params.
+func (p ProvisionParams) RepoRoot() string {
+	spec := p.Spec
+	if spec.Template != nil && spec.VCS.CloneURL == "" {
+		return DeriveLocalRepoRoot(p.WorkspaceRoot, spec.Name)
+	}
+	return DeriveRepoRoot(p.WorkspaceRoot, spec.VCS.Host, spec.VCS.Repo)
+}
+
+// BareRoot derives the bare clone directory from the provision params.
+func (p ProvisionParams) BareRoot() string {
+	return DeriveBareRoot(p.RepoRoot())
+}
+
+// ProjectRoot derives the worktree checkout directory from the spec name.
+// If the spec name contains "/", the second segment is the worktree name
+// (e.g. "myrepo/feature" -> worktree "feature"). Otherwise, "default".
+func (p ProvisionParams) ProjectRoot() string {
+	worktreeName := "default"
+	if parts := strings.SplitN(p.Spec.Name, "/", 2); len(parts) == 2 {
+		worktreeName = parts[1]
+	}
+	return DeriveProjectRoot(p.RepoRoot(), worktreeName)
 }
 
 // Workspace is the aggregate root — one per repo per pod.
@@ -96,6 +119,35 @@ func (w *Workspace) FindWorktree(name string) *Worktree {
 		}
 	}
 	return nil
+}
+
+// FindWorktreeByBranch returns the worktree with the given branch name, or nil if not found.
+func (w *Workspace) FindWorktreeByBranch(branch string) *Worktree {
+	for i := range w.Worktrees {
+		if w.Worktrees[i].Branch == branch {
+			return &w.Worktrees[i]
+		}
+	}
+	return nil
+}
+
+// RemoveWorktreeByName removes the worktree with the given name from the Worktrees slice.
+// Returns true if found and removed, false if not found.
+func (w *Workspace) RemoveWorktreeByName(name string) bool {
+	for i := range w.Worktrees {
+		if w.Worktrees[i].Name == name {
+			w.Worktrees = append(w.Worktrees[:i], w.Worktrees[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveIDEForWorktree deletes the IDE entry for the given worktree name.
+func (w *Workspace) RemoveIDEForWorktree(worktreeName string) {
+	if w.IDE != nil {
+		delete(w.IDE, worktreeName)
+	}
 }
 
 // DefaultProjectRoot returns the ProjectRoot of the default worktree, or empty string.

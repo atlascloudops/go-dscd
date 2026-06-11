@@ -508,12 +508,10 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name: "myrepo",
-			VCS:  VCSTarget{Host: "github.com", CloneURL: "fake"},
+			VCS:  VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
 			Owner: currentUser(),
 		},
-		RepoRoot:    filepath.Join(dir, "repo"),
-		BareRoot:    filepath.Join(dir, "repo", ".bare"),
-		ProjectRoot: projectRoot,
+		WorkspaceRoot: dir,
 	}
 
 	p := &Provisioner{
@@ -599,12 +597,10 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "fake"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
 			Owner: currentUser(),
 		},
-		RepoRoot:    filepath.Join(dir, "repo"),
-		BareRoot:    filepath.Join(dir, "repo", ".bare"),
-		ProjectRoot: projectRoot,
+		WorkspaceRoot: dir,
 	}
 
 	p := &Provisioner{
@@ -655,12 +651,10 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "fake"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
 			Owner: currentUser(),
 		},
-		RepoRoot:    filepath.Join(dir, "repo"),
-		BareRoot:    filepath.Join(dir, "repo", ".bare"),
-		ProjectRoot: projectRoot,
+		WorkspaceRoot: dir,
 	}
 
 	p := &Provisioner{}
@@ -790,8 +784,6 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	store.instances["myrepo"] = &Workspace{
 		Name:     "myrepo",
 		Owner:    "user",
-		RepoRoot: filepath.Join(dir, "repo"),
-		BareRoot: filepath.Join(dir, "repo", ".bare"),
 		Status:   StatusReady,
 		Worktrees: []Worktree{
 			{Name: "default", ProjectRoot: filepath.Join(dir, "repo", "default"), IsDefault: true},
@@ -850,8 +842,6 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 	inst := &Workspace{
 		Name:     "myrepo",
 		Owner:    "user",
-		RepoRoot: filepath.Join(dir, "repo"),
-		BareRoot: filepath.Join(dir, "repo", ".bare"),
 		Status:   StatusReady,
 		Worktrees: []Worktree{
 			{Name: "default", ProjectRoot: filepath.Join(dir, "repo", "default"), IsDefault: true},
@@ -928,12 +918,10 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
-			VCS:   VCSTarget{Host: "github.com", CloneURL: "fake"},
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
 			Owner: currentUser(),
 		},
-		RepoRoot:    filepath.Join(dir, "repo"),
-		BareRoot:    filepath.Join(dir, "repo", ".bare"),
-		ProjectRoot: projectRoot,
+		WorkspaceRoot: dir,
 	}
 
 	p := &Provisioner{
