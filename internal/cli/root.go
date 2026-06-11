@@ -72,6 +72,8 @@ func NewRootCommand(version string) *cobra.Command {
 		newWorkspaceListCmd(fs),
 		newWorkspaceInspectCmd(fs),
 		newWorkspaceSyncCmd(fs, al.get()),
+		newWorkspaceHydrateCmd(fs, al.get(), &workspaceRoot),
+		newWorkspaceBootCmd(fs, al.get(), &workspaceRoot),
 		newWorkspaceWorktreeCmd(fs, al.get()),
 	)
 
