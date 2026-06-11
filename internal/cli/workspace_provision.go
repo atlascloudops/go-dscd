@@ -9,20 +9,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
+func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.ActivityLog, workspaceRoot *string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "provision <params-json>",
-		Short: "Provision a workspace from a JSON params object",
+		Use:   "provision <spec-json>",
+		Short: "Provision a workspace from a JSON spec",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var params domain.ProvisionParams
-			if err := json.Unmarshal([]byte(args[0]), &params); err != nil {
+			var spec domain.WorkspaceSpec
+			if err := json.Unmarshal([]byte(args[0]), &spec); err != nil {
 				resp := domain.ErrorResponse("workspace.provision", domain.ErrorInfo{
 					Code:    domain.ErrSpecInvalid,
-					Message: "invalid JSON params",
+					Message: "invalid JSON spec",
 					Detail:  err.Error(),
 				})
 				return outputResponse(resp, 1)
+			}
+
+			// Resolve workspace root: flag > env > default
+			wsRoot := *workspaceRoot
+			if wsRoot == "" {
+				wsRoot = domain.ResolveWorkspaceRoot(spec.Owner)
+			}
+
+			params := domain.ProvisionParams{
+				Spec:          spec,
+				WorkspaceRoot: wsRoot,
 			}
 
 			provisioner := &domain.Provisioner{

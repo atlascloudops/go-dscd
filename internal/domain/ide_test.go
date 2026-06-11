@@ -501,18 +501,17 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 
 	store := newMemStore()
 
-	// Create a fake worktree on disk
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
+	// Create a fake worktree on disk at the derived path
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
-			Name: "myrepo",
-			VCS:  VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
 			Owner: currentUser(),
 		},
 		WorkspaceRoot: dir,
 	}
+	projectRoot := params.ProjectRoot()
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	p := &Provisioner{
 		IDEAdapter:    adapter,
@@ -591,9 +590,6 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	pa := NewPortAllocator(portFile)
 
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
@@ -602,6 +598,8 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 		},
 		WorkspaceRoot: dir,
 	}
+	projectRoot := params.ProjectRoot()
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	p := &Provisioner{
 		IDEAdapter:    adapter,
@@ -645,9 +643,6 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 	dir := t.TempDir()
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
@@ -656,6 +651,8 @@ func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 		},
 		WorkspaceRoot: dir,
 	}
+	projectRoot := params.ProjectRoot()
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	p := &Provisioner{}
 
@@ -912,9 +909,6 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	pa := NewPortAllocator(portFile)
 
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
 	params := ProvisionParams{
 		Spec: WorkspaceSpec{
 			Name:  "myrepo",
@@ -923,6 +917,8 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 		},
 		WorkspaceRoot: dir,
 	}
+	projectRoot := params.ProjectRoot()
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	p := &Provisioner{
 		IDEAdapter:    adapter,

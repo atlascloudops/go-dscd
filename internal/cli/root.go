@@ -20,6 +20,7 @@ func NewRootCommand(version string) *cobra.Command {
 	var statePath string
 	var activityLogPath string
 	var logLevel string
+	var workspaceRoot string
 
 	root := &cobra.Command{
 		Use:   "dscd",
@@ -34,6 +35,7 @@ func NewRootCommand(version string) *cobra.Command {
 	root.PersistentFlags().StringVar(&statePath, "state-path", defaultStatePath, "path to state file")
 	root.PersistentFlags().StringVar(&activityLogPath, "activity-log", defaultActivityLog, "path to activity log file")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
+	root.PersistentFlags().StringVar(&workspaceRoot, "workspace-root", "", "workspace root directory (default: ~/code, override with DSCD_WORKSPACE_ROOT)")
 
 	root.Version = version
 	root.SetVersionTemplate(fmt.Sprintf("dscd v%s\n", version))
@@ -64,7 +66,7 @@ func NewRootCommand(version string) *cobra.Command {
 	fs := &lazyStore{factory: storeFactory}
 
 	workspace.AddCommand(
-		newWorkspaceProvisionCmd(fs, al.get()),
+		newWorkspaceProvisionCmd(fs, al.get(), &workspaceRoot),
 		newWorkspaceDeprovisionCmd(fs, al.get()),
 		newWorkspacePruneCmd(fs, al.get()),
 		newWorkspaceListCmd(fs),
