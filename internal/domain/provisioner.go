@@ -37,8 +37,8 @@ func (p *Provisioner) recordIDEEvent(ide *IDEInstance, event IDEEvent, detail st
 
 // Provision creates a workspace using the new aggregate model.
 // It always provisions a bare clone + default worktree on HEAD. Non-default
-// worktrees are created lazily via AddWorktree. IDE startup is deferred to
-// the ide-worktree-scoping story.
+// worktrees are created lazily via AddWorktree. IDE startup is not part of
+// provision — it is triggered separately via StartIDE (or the CLI's attach flow).
 func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Workspace, error) {
 	spec := params.Spec
 	if err := validateSpec(spec); err != nil {
@@ -120,7 +120,7 @@ func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams)
 			})
 		}
 
-		// IDE startup is deferred to the ide-worktree-scoping story
+		// IDE startup is separate — triggered via StartIDE or CLI attach flow
 
 		instances[params.Spec.Name] = ws
 		return store.Save(instances)
@@ -552,9 +552,158 @@ func (p *Provisioner) healthCheckIDEForWorktree(ws *Workspace, worktreeName stri
 	}
 }
 
-// resolveIDEAdapter validates that an IDE adapter is configured.
-func (p *Provisioner) resolveIDEAdapter() error {
-	return nil
+// IDEStartResult holds the outcome of a StartIDE operation.
+type IDEStartResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	WorktreeName  string `json:"worktree_name"`
+	Adapter       string `json:"adapter"`
+	Port          int    `json:"port"`
+	Status        string `json:"status"`
+}
+
+// StartIDE starts an IDE instance for a specific worktree within a workspace.
+// It allocates a port, starts the IDE adapter, records events, and persists state.
+// The operation is idempotent — if an IDE is already running for the worktree,
+// its current state is returned without restarting.
+func (p *Provisioner) StartIDE(store StateStore, workspaceName, worktreeName string) (*IDEStartResult, error) {
+	if p.IDEAdapter == nil || p.PortAllocator == nil {
+		return nil, &ProvisionError{
+			Code:    "IDE_NOT_CONFIGURED",
+			Message: "IDE adapter or port allocator not configured",
+		}
+	}
+
+	var result *IDEStartResult
+
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+
+		ws, ok := instances[workspaceName]
+		if !ok {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+			}
+		}
+
+		// Resolve the worktree — default to "default" if empty
+		if worktreeName == "" {
+			worktreeName = "default"
+		}
+		wt := ws.FindWorktree(worktreeName)
+		if wt == nil {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("worktree '%s' not found in workspace '%s'", worktreeName, workspaceName),
+			}
+		}
+
+		// Idempotent: if IDE is already running and ready, return current state
+		if existing := ws.IDEForWorktree(worktreeName); existing != nil && existing.Status == StatusReady {
+			result = &IDEStartResult{
+				WorkspaceName: workspaceName,
+				WorktreeName:  worktreeName,
+				Adapter:       existing.Adapter,
+				Port:          existing.Port,
+				Status:        string(existing.Status),
+			}
+			return nil
+		}
+
+		p.startIDEForWorktree(ws, worktreeName, wt.ProjectRoot)
+
+		ide := ws.IDEForWorktree(worktreeName)
+		if ide == nil {
+			return fmt.Errorf("IDE instance not created after start")
+		}
+
+		result = &IDEStartResult{
+			WorkspaceName: workspaceName,
+			WorktreeName:  worktreeName,
+			Adapter:       ide.Adapter,
+			Port:          ide.Port,
+			Status:        string(ide.Status),
+		}
+
+		instances[workspaceName] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// IDEStopResult holds the outcome of a StopIDE operation.
+type IDEStopResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	WorktreeName  string `json:"worktree_name"`
+	Message       string `json:"message"`
+}
+
+// StopIDE stops an IDE instance for a specific worktree within a workspace.
+// It stops the IDE adapter, releases the port, records events, and persists state.
+// If no IDE is running for the worktree, a not-found error is returned.
+func (p *Provisioner) StopIDE(store StateStore, workspaceName, worktreeName string) (*IDEStopResult, error) {
+	if p.IDEAdapter == nil || p.PortAllocator == nil {
+		return nil, &ProvisionError{
+			Code:    "IDE_NOT_CONFIGURED",
+			Message: "IDE adapter or port allocator not configured",
+		}
+	}
+
+	var result *IDEStopResult
+
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+
+		ws, ok := instances[workspaceName]
+		if !ok {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+			}
+		}
+
+		if worktreeName == "" {
+			worktreeName = "default"
+		}
+
+		ide := ws.IDEForWorktree(worktreeName)
+		if ide == nil {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("no IDE instance for worktree '%s' in workspace '%s'", worktreeName, workspaceName),
+			}
+		}
+
+		wt := ws.FindWorktree(worktreeName)
+		wtPath := ""
+		if wt != nil {
+			wtPath = wt.ProjectRoot
+		}
+
+		p.stopIDEForWorktree(ws, worktreeName, wtPath)
+
+		result = &IDEStopResult{
+			WorkspaceName: workspaceName,
+			WorktreeName:  worktreeName,
+			Message:       fmt.Sprintf("IDE stopped for worktree '%s' in workspace '%s'.", worktreeName, workspaceName),
+		}
+
+		instances[workspaceName] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // hydrateWorktrees fetches and fast-forward merges matching worktrees.

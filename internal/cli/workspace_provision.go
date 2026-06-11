@@ -38,7 +38,7 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 
 			provisioner := &domain.Provisioner{
 				ActivityLog: activityLog,
-				// IDE startup is deferred to the ide-worktree-scoping story
+				// IDE startup is separate — triggered via `workspace ide start`
 			}
 
 			ws, err := provisioner.Provision(store, params)

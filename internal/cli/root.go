@@ -75,6 +75,7 @@ func NewRootCommand(version string) *cobra.Command {
 		newWorkspaceHydrateCmd(fs, al.get(), &workspaceRoot),
 		newWorkspaceBootCmd(fs, al.get(), &workspaceRoot),
 		newWorkspaceWorktreeCmd(fs, al.get()),
+		newWorkspaceIDECmd(fs, al.get()),
 	)
 
 	credentials := &cobra.Command{
