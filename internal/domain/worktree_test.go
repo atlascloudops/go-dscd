@@ -174,32 +174,32 @@ func TestListWorktrees_RealGit(t *testing.T) {
 	p := &Provisioner{}
 
 	// Provision default (bare clone + default worktree)
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	if _, err := p.Provision(store, defaultSpec); err != nil {
+	if _, err := p.Provision(store, defaultParams); err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
 	// Provision feature worktree
-	featureSpec := WorkspaceSpec{
-		Name:         "myrepo/feature-vpc",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
-		ProjectRoot:  featureRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature-vpc",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	featureParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/feature-vpc",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: featureRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	if _, err := p.Provision(store, featureSpec); err != nil {
+	if _, err := p.Provision(store, featureParams); err != nil {
 		t.Fatalf("feature provision failed: %v", err)
 	}
 

@@ -9,7 +9,7 @@ import (
 func TestOkResponse(t *testing.T) {
 	resp := OkResponse("workspace.list", []string{"ws1"})
 	if resp.Version != "v2" {
-		t.Fatalf("expected version v1, got %s", resp.Version)
+		t.Fatalf("expected version v2, got %s", resp.Version)
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("expected status ok, got %s", resp.Status)
@@ -138,10 +138,8 @@ func TestIDEInfo_JSON(t *testing.T) {
 
 func TestWorkspaceInspectData_IDEInfoOmittedWhenNil(t *testing.T) {
 	inspect := WorkspaceInspectData{
-		Workspace: Workspace{Status: StatusReady},
-		BareRoot:         "/tmp/.bare",
-		WorktreeCount:    1,
-		Worktrees:        []string{"/tmp/default"},
+		Workspace:     Workspace{Name: "test", Status: StatusReady},
+		WorktreeCount: 1,
 	}
 	data, err := json.Marshal(inspect)
 	if err != nil {
@@ -154,11 +152,11 @@ func TestWorkspaceInspectData_IDEInfoOmittedWhenNil(t *testing.T) {
 
 func TestWorkspaceInspectData_IDEInfoPresent(t *testing.T) {
 	inspect := WorkspaceInspectData{
-		Workspace: Workspace{Status: StatusReady},
-		BareRoot:         "/tmp/.bare",
-		WorktreeCount:    1,
-		Worktrees:        []string{"/tmp/default"},
-		IDEInfo:          &IDEInfo{Adapter: "openvscode-server", Port: 9100, Status: "ready"},
+		Workspace:     Workspace{Name: "test", Status: StatusReady},
+		WorktreeCount: 1,
+		IDEInfo: map[string]*IDEInfo{
+			"default": {Adapter: "openvscode-server", Port: 9100, Status: "ready"},
+		},
 	}
 	data, err := json.Marshal(inspect)
 	if err != nil {
@@ -204,61 +202,44 @@ func TestIDEInfoFromInstance_EmptyStatus(t *testing.T) {
 	}
 }
 
-func TestWorkspaceListItemFromInstance_NoIDE(t *testing.T) {
+func TestWorkspaceListItemFromInstance_Basic(t *testing.T) {
 	inst := &Workspace{
-		Spec:   WorkspaceSpec{Name: "myrepo"},
+		Name:   "myrepo",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/myrepo"},
 		Status: StatusReady,
-	}
-	item := WorkspaceListItemFromInstance(inst)
-	if item.IDEPort != 0 {
-		t.Errorf("expected ide_port=0 (omitted), got %d", item.IDEPort)
-	}
-
-	// Verify ide_port is omitted from JSON
-	data, _ := json.Marshal(item)
-	if strings.Contains(string(data), `"ide_port"`) {
-		t.Error("expected ide_port to be omitted from JSON when no IDE")
-	}
-}
-
-func TestWorkspaceListItemFromInstance_IDEReady(t *testing.T) {
-	inst := &Workspace{
-		Spec:   WorkspaceSpec{Name: "myrepo"},
-		Status: StatusReady,
-		IDE: &IDEInstance{
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Status:  StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
 		},
 	}
 	item := WorkspaceListItemFromInstance(inst)
-	if item.IDEPort != 9100 {
-		t.Errorf("expected ide_port=9100, got %d", item.IDEPort)
+	if item.Name != "myrepo" {
+		t.Errorf("expected name myrepo, got %q", item.Name)
 	}
-
-	data, _ := json.Marshal(item)
-	if !strings.Contains(string(data), `"ide_port":9100`) {
-		t.Error("expected ide_port:9100 in JSON")
+	if item.WorktreeCount != 1 {
+		t.Errorf("expected worktree_count=1, got %d", item.WorktreeCount)
+	}
+	if item.Repo.Slug != "org/myrepo" {
+		t.Errorf("expected repo slug org/myrepo, got %q", item.Repo.Slug)
 	}
 }
 
-func TestWorkspaceListItemFromInstance_IDENotReady(t *testing.T) {
+func TestWorkspaceListItemFromInstance_JSON(t *testing.T) {
 	inst := &Workspace{
-		Spec:   WorkspaceSpec{Name: "myrepo"},
+		Name:   "myrepo",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/myrepo"},
 		Status: StatusReady,
-		IDE: &IDEInstance{
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Status:  StatusFailed,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
+			{Name: "feature", IsDefault: false},
 		},
 	}
 	item := WorkspaceListItemFromInstance(inst)
-	if item.IDEPort != 0 {
-		t.Errorf("expected ide_port=0 when IDE not ready, got %d", item.IDEPort)
-	}
-
 	data, _ := json.Marshal(item)
-	if strings.Contains(string(data), `"ide_port"`) {
-		t.Error("expected ide_port to be omitted when IDE not ready")
+	s := string(data)
+	if !strings.Contains(s, `"worktree_count":2`) {
+		t.Error("expected worktree_count:2 in JSON")
+	}
+	if !strings.Contains(s, `"name":"myrepo"`) {
+		t.Error("expected name:myrepo in JSON")
 	}
 }

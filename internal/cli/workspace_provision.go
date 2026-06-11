@@ -11,15 +11,15 @@ import (
 
 func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	return &cobra.Command{
-		Use:   "provision <spec-json>",
-		Short: "Provision a workspace from a JSON spec",
+		Use:   "provision <params-json>",
+		Short: "Provision a workspace from a JSON params object",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var spec domain.WorkspaceSpec
-			if err := json.Unmarshal([]byte(args[0]), &spec); err != nil {
+			var params domain.ProvisionParams
+			if err := json.Unmarshal([]byte(args[0]), &params); err != nil {
 				resp := domain.ErrorResponse("workspace.provision", domain.ErrorInfo{
 					Code:    domain.ErrSpecInvalid,
-					Message: "invalid JSON spec",
+					Message: "invalid JSON params",
 					Detail:  err.Error(),
 				})
 				return outputResponse(resp, 1)
@@ -31,7 +31,7 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 				ActivityLog:   activityLog,
 			}
 
-			inst, err := provisioner.Provision(store, spec)
+			ws, err := provisioner.Provision(store, params)
 			if err != nil {
 				if pe, ok := err.(*domain.ProvisionError); ok {
 					resp := domain.ErrorResponse("workspace.provision", domain.ErrorInfo{
@@ -48,7 +48,7 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 				return outputResponse(resp, 1)
 			}
 
-			resp := domain.OkResponse("workspace.provision", inst)
+			resp := domain.OkResponse("workspace.provision", ws)
 			return outputResponse(resp, 0)
 		},
 	}

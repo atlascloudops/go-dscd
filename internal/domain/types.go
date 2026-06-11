@@ -5,20 +5,32 @@ import (
 	"time"
 )
 
-// WorkspaceSpec is the input definition — what the client asks for.
+// RepoInfo is a child entity capturing the VCS identity of the workspace's repository.
+type RepoInfo struct {
+	Host     string `json:"host"`      // e.g. "github.com"
+	Slug     string `json:"slug"`      // e.g. "org/repo"
+	CloneURL string `json:"clone_url"` // e.g. "https://github.com/org/repo.git"
+}
+
+// Worktree is a child entity within a Workspace, representing a single worktree
+// checked out from the bare clone.
+type Worktree struct {
+	Name        string `json:"name"`
+	Branch      string `json:"branch"`
+	ProjectRoot string `json:"project_root"`
+	IsDefault   bool   `json:"is_default"`
+	HeadCommit  string `json:"head_commit,omitempty"`
+}
+
+// WorkspaceSpec is the provision-time input DTO — identity and intent only, no paths.
+// Path fields are server-derived and live on the Workspace aggregate.
+// Worktree fields live on the Worktree child entity.
 type WorkspaceSpec struct {
-	Name          string    `json:"name"`           // user-facing alias: "infra" or custom name
-	CanonicalName string    `json:"canonical_name"` // VCS-derived identity: "infra" or "infra/feat"
-	VCS           VCSTarget `json:"vcs"`
-	PatName       string    `json:"pat_name"`
-	ProjectRoot  string    `json:"project_root"`  // final worktree path
-	RepoRoot     string    `json:"repo_root"`     // container dir (holds .bare/ and worktrees)
-	BareRoot     string    `json:"bare_root"`     // path to .bare/
-	WorktreeName string    `json:"worktree_name"` // "default" or branch-derived
-	IsDefault    bool      `json:"is_default"`    // true = bare clone + first worktree
-	Owner        string          `json:"owner"`
-	IDE          *IDESpecConfig  `json:"ide,omitempty"`
-	Template     *TemplateSource `json:"template,omitempty"`
+	Name     string          `json:"name"`
+	VCS      VCSTarget       `json:"vcs"`
+	PatName  string          `json:"pat_name"`
+	Owner    string          `json:"owner"`
+	Template *TemplateSource `json:"template,omitempty"`
 }
 
 // TemplateSource describes the template repository used to seed a workspace.
@@ -28,38 +40,93 @@ type TemplateSource struct {
 	Repo     string `json:"repo"`
 }
 
-// IDESpecConfig is the optional IDE configuration on a workspace spec.
-// When set, provisioning will start an IDE adapter after worktree creation.
-type IDESpecConfig struct {
-	Adapter string `json:"adapter"` // e.g. "openvscode-server"
-}
-
+// VCSTarget identifies the repository to clone. Simplified to match RepoInfo fields:
+// Host, Repo, CloneURL only. Branch and AuthUser have been removed.
 type VCSTarget struct {
 	Host     string `json:"host"`
-	AuthUser string `json:"auth_user"`
 	Repo     string `json:"repo"`
-	Branch   string `json:"branch"`
 	CloneURL string `json:"clone_url,omitempty"`
 }
 
-// Workspace is the realized state — what actually exists on the pod.
-// Formerly WorkspaceInstance; promoted to a proper aggregate with RecordEvent.
+// ProvisionParams bundles a WorkspaceSpec with server-derived paths for the
+// provision flow. In the current transitional state, paths are provided by the
+// CLI (from frontend JSON). The server-owned-workspace-root story will replace
+// this with server-side derivation.
+type ProvisionParams struct {
+	Spec        WorkspaceSpec `json:"spec"`
+	RepoRoot    string        `json:"repo_root"`
+	BareRoot    string        `json:"bare_root"`
+	ProjectRoot string        `json:"project_root"`
+}
+
+// Workspace is the aggregate root — one per repo per pod.
+// It represents a bare clone container with child worktree entities.
 type Workspace struct {
-	Spec          WorkspaceSpec `json:"spec"`
-	Events        []EventRecord `json:"events,omitempty"`
-	Status        Status        `json:"status,omitempty"`
-	IDE           *IDEInstance   `json:"ide,omitempty"`
-	HeadCommit    string        `json:"head_commit,omitempty"`
-	ProvisionedAt *time.Time    `json:"provisioned_at,omitempty"`
-	LastError     *string       `json:"last_error,omitempty"`
-	LastSyncedAt  *time.Time    `json:"last_synced_at,omitempty"`
+	Name          string                 `json:"name"`
+	Repo          RepoInfo               `json:"repo"`
+	RepoRoot      string                 `json:"repo_root"`
+	BareRoot      string                 `json:"bare_root"`
+	Owner         string                 `json:"owner"`
+	PatName       string                 `json:"pat_name"`
+	Template      *TemplateSource        `json:"template,omitempty"`
+	Worktrees     []Worktree             `json:"worktrees"`
+	Events        []EventRecord          `json:"events,omitempty"`
+	Status        Status                 `json:"status,omitempty"`
+	IDE           map[string]*IDEInstance `json:"ide,omitempty"`
+	ProvisionedAt *time.Time             `json:"provisioned_at,omitempty"`
+	LastError     *string                `json:"last_error,omitempty"`
+	LastSyncedAt  *time.Time             `json:"last_synced_at,omitempty"`
+}
+
+// DefaultWorktree returns the first worktree with IsDefault=true, or nil if none.
+func (w *Workspace) DefaultWorktree() *Worktree {
+	for i := range w.Worktrees {
+		if w.Worktrees[i].IsDefault {
+			return &w.Worktrees[i]
+		}
+	}
+	return nil
+}
+
+// FindWorktree returns the worktree with the given name, or nil if not found.
+func (w *Workspace) FindWorktree(name string) *Worktree {
+	for i := range w.Worktrees {
+		if w.Worktrees[i].Name == name {
+			return &w.Worktrees[i]
+		}
+	}
+	return nil
+}
+
+// DefaultProjectRoot returns the ProjectRoot of the default worktree, or empty string.
+func (w *Workspace) DefaultProjectRoot() string {
+	if wt := w.DefaultWorktree(); wt != nil {
+		return wt.ProjectRoot
+	}
+	return ""
+}
+
+// IDEForWorktree returns the IDEInstance for the given worktree name, or nil.
+func (w *Workspace) IDEForWorktree(worktreeName string) *IDEInstance {
+	if w.IDE == nil {
+		return nil
+	}
+	return w.IDE[worktreeName]
+}
+
+// SetIDEForWorktree sets the IDEInstance for the given worktree name.
+func (w *Workspace) SetIDEForWorktree(worktreeName string, ide *IDEInstance) {
+	if w.IDE == nil {
+		w.IDE = make(map[string]*IDEInstance)
+	}
+	w.IDE[worktreeName] = ide
 }
 
 // RecordEvent is the sole entry point for workspace event emission. It constructs
 // an EventRecord with the workspace's scope, appends it to the event stream, and
 // re-projects the workspace status.
 func (w *Workspace) RecordEvent(event WorkspaceEvent, detail string) {
-	scope := EventScope{Kind: ScopeKindWorkspace, Name: w.Spec.Name}
+	scope := EventScope{Kind: ScopeKindWorkspace, Name: w.Name}
 	w.Events = append(w.Events, EventRecord{
 		Scope:     scope,
 		Event:     string(event),
@@ -74,7 +141,7 @@ func (w *Workspace) RecordEvent(event WorkspaceEvent, detail string) {
 // Old state files store events as WorkspaceEventRecord (no scope); new ones use
 // EventRecord (with scope). This method detects which format is present and
 // converts old-format events into EventRecord with a workspace scope derived
-// from the spec name.
+// from the workspace name.
 func (w *Workspace) UnmarshalJSON(data []byte) error {
 	// Alias avoids infinite recursion on UnmarshalJSON.
 	type Alias Workspace
@@ -99,7 +166,7 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		// Fall back to old WorkspaceEventRecord format.
 		var old WorkspaceEventRecord
 		if err := json.Unmarshal(re, &old); err == nil && old.Event != "" {
-			w.Events = append(w.Events, old.ToEventRecord(w.Spec.Name))
+			w.Events = append(w.Events, old.ToEventRecord(w.Name))
 			continue
 		}
 	}
@@ -120,8 +187,8 @@ func (w *Workspace) DisplayStatus() string {
 
 // PruneResult holds the outcome of a prune operation.
 type PruneResult struct {
-	Pruned  []string       `json:"pruned"`  // workspace names removed
-	Skipped []PruneSkipped `json:"skipped"` // workspace names kept, with reason
+	Pruned  []string       `json:"pruned"`  // worktree names removed
+	Skipped []PruneSkipped `json:"skipped"` // worktree names kept, with reason
 	Message string         `json:"message"`
 }
 
@@ -130,4 +197,3 @@ type PruneSkipped struct {
 	Name   string `json:"name"`
 	Reason string `json:"reason"` // e.g. "uncommitted changes", "default worktree"
 }
-

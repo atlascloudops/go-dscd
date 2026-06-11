@@ -98,7 +98,7 @@ func TestValidateSpec_MissingFields(t *testing.T) {
 	if pe.Code != ErrSpecInvalid {
 		t.Fatalf("expected SPEC_INVALID, got %s", pe.Code)
 	}
-	for _, field := range []string{"name", "vcs.clone_url", "vcs.branch", "project_root", "repo_root", "bare_root", "worktree_name", "owner"} {
+	for _, field := range []string{"name", "vcs.clone_url", "owner"} {
 		if !strings.Contains(pe.Detail, field) {
 			t.Fatalf("expected detail to contain %q, got %q", field, pe.Detail)
 		}
@@ -106,75 +106,58 @@ func TestValidateSpec_MissingFields(t *testing.T) {
 }
 
 func TestValidateSpec_Valid(t *testing.T) {
-	dir := t.TempDir()
 	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot:  filepath.Join(dir, "default"),
-		RepoRoot:     dir,
-		BareRoot:     filepath.Join(dir, ".bare"),
-		WorktreeName: "default",
-		Owner:        "user",
+		Name:  "test",
+		VCS:   VCSTarget{CloneURL: "https://github.com/org/repo.git"},
+		Owner: "user",
 	}
 	if err := validateSpec(spec); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestValidateSpec_MissingRepoRoot(t *testing.T) {
+func TestValidateSpec_MissingOwner(t *testing.T) {
 	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot:  "/tmp/test",
-		BareRoot:     "/tmp/.bare",
-		WorktreeName: "default",
-		Owner:        "user",
+		Name: "test",
+		VCS:  VCSTarget{CloneURL: "https://github.com/org/repo.git"},
 	}
 	err := validateSpec(spec)
 	if err == nil {
-		t.Fatal("expected error when repo_root is empty")
+		t.Fatal("expected error when owner is empty")
 	}
 	pe := err.(*ProvisionError)
-	if !strings.Contains(pe.Detail, "repo_root") {
-		t.Fatalf("expected detail to mention repo_root, got %q", pe.Detail)
+	if !strings.Contains(pe.Detail, "owner") {
+		t.Fatalf("expected detail to mention owner, got %q", pe.Detail)
 	}
 }
 
-func TestValidateSpec_MissingBareRoot(t *testing.T) {
+func TestValidateSpec_MissingName(t *testing.T) {
 	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot:  "/tmp/test",
-		RepoRoot:     "/tmp",
-		WorktreeName: "default",
-		Owner:        "user",
+		VCS:   VCSTarget{CloneURL: "https://github.com/org/repo.git"},
+		Owner: "user",
 	}
 	err := validateSpec(spec)
 	if err == nil {
-		t.Fatal("expected error when bare_root is empty")
+		t.Fatal("expected error when name is empty")
 	}
 	pe := err.(*ProvisionError)
-	if !strings.Contains(pe.Detail, "bare_root") {
-		t.Fatalf("expected detail to mention bare_root, got %q", pe.Detail)
+	if !strings.Contains(pe.Detail, "name") {
+		t.Fatalf("expected detail to mention name, got %q", pe.Detail)
 	}
 }
 
-func TestValidateSpec_MissingWorktreeName(t *testing.T) {
+func TestValidateSpec_MissingCloneURL(t *testing.T) {
 	spec := WorkspaceSpec{
-		Name:        "test",
-		VCS:         VCSTarget{CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot: "/tmp/test",
-		RepoRoot:    "/tmp",
-		BareRoot:    "/tmp/.bare",
-		Owner:       "user",
+		Name:  "test",
+		Owner: "user",
 	}
 	err := validateSpec(spec)
 	if err == nil {
-		t.Fatal("expected error when worktree_name is empty")
+		t.Fatal("expected error when vcs.clone_url is empty")
 	}
 	pe := err.(*ProvisionError)
-	if !strings.Contains(pe.Detail, "worktree_name") {
-		t.Fatalf("expected detail to mention worktree_name, got %q", pe.Detail)
+	if !strings.Contains(pe.Detail, "vcs.clone_url") {
+		t.Fatalf("expected detail to mention vcs.clone_url, got %q", pe.Detail)
 	}
 }
 
@@ -349,18 +332,18 @@ func TestProvision_IdempotentWithGitDir(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        "testuser",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "test",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			Owner: "testuser",
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -390,18 +373,18 @@ func TestProvision_IdempotentWithGitFile(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "test/feature",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git", Branch: "feature"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature",
-		IsDefault:    false,
-		Owner:        "testuser",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "test/feature",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			Owner: "testuser",
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -414,7 +397,7 @@ func TestProvision_InvalidSpec(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	_, err := p.Provision(store, WorkspaceSpec{})
+	_, err := p.Provision(store, ProvisionParams{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -481,18 +464,18 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
@@ -507,7 +490,7 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	if inst.Status != StatusReady {
 		t.Fatalf("expected ready, got %s", inst.Status)
 	}
-	if inst.HeadCommit == "" {
+	if inst.DefaultWorktree() == nil || inst.DefaultWorktree().HeadCommit == "" {
 		t.Fatal("expected non-empty head commit")
 	}
 
@@ -522,7 +505,7 @@ func TestProvisionBareCloneAndDefault_RealGit(t *testing.T) {
 	}
 
 	// AC: Idempotent re-provision returns ready without re-cloning
-	inst2, err := p.Provision(store, spec)
+	inst2, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
@@ -548,36 +531,36 @@ func TestProvisionWorktree_FromExistingBare(t *testing.T) {
 	p := &Provisioner{}
 
 	// Step 1: Provision default (bare clone + default worktree)
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, defaultSpec)
+	_, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
 	// Step 2: Provision branch worktree from existing bare
 	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
-	featureSpec := WorkspaceSpec{
-		Name:         "myrepo/feature-vpc",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
-		ProjectRoot:  featureRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature-vpc",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	featureParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/feature-vpc",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: featureRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, featureSpec)
+	inst, err := p.Provision(store, featureParams)
 	if err != nil {
 		t.Fatalf("worktree provision failed: %v", err)
 	}
@@ -626,18 +609,18 @@ func TestProvision_NonDefaultBeforeBareClone(t *testing.T) {
 	p := &Provisioner{}
 
 	// AC: Non-default worktree requested before bare clone exists -> bare clone is created automatically
-	spec := WorkspaceSpec{
-		Name:         "myrepo/feature-vpc",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
-		ProjectRoot:  featureRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature-vpc",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/feature-vpc",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: featureRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
@@ -677,18 +660,18 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	p := &Provisioner{}
 
 	// --- Step 3: Provision first workspace (bare clone + default worktree) ---
-	defaultSpec := WorkspaceSpec{
-		Name:         "ocr-service",
-		VCS:          VCSTarget{Host: "gitlab.com", AuthUser: "oauth2", Repo: "org/ocr-service", Branch: "main", CloneURL: upstreamBare},
-		PatName:      "gitlab-token",
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:    "ocr-service",
+			VCS:     VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
+			PatName: "gitlab-token",
+			Owner:   currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	inst, err := p.Provision(store, defaultSpec)
+	inst, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("step 3: default provision failed: %v", err)
 	}
@@ -718,18 +701,18 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 
 	// --- Step 5: Provision branch worktree (reuses existing .bare/) ---
-	expSpec := WorkspaceSpec{
-		Name:         "ocr-service/experiment",
-		VCS:          VCSTarget{Host: "gitlab.com", AuthUser: "oauth2", Repo: "org/ocr-service", Branch: "experiment", CloneURL: upstreamBare},
-		PatName:      "gitlab-token",
-		ProjectRoot:  experimentRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "experiment",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	expParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:    "ocr-service/experiment",
+			VCS:     VCSTarget{Host: "gitlab.com", Repo: "org/ocr-service", CloneURL: upstreamBare},
+			PatName: "gitlab-token",
+			Owner:   currentUser(),
+		},
+		ProjectRoot: experimentRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	inst2, err := p.Provision(store, expSpec)
+	inst2, err := p.Provision(store, expParams)
 	if err != nil {
 		t.Fatalf("step 5: experiment provision failed: %v", err)
 	}
@@ -771,7 +754,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 
 	// --- Step 11: Re-create, dirty it, attempt delete (guard) ---
-	_, err = p.Provision(store, expSpec)
+	_, err = p.Provision(store, expParams)
 	if err != nil {
 		t.Fatalf("step 11: re-provision failed: %v", err)
 	}
@@ -803,47 +786,34 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 		t.Fatal("step 12: experiment should be gone after force delete")
 	}
 
-	// --- Step 13: Delete default worktree (should be refused) ---
-	_, err = p.Deprovision(store, "ocr-service", false)
-	if err == nil {
-		t.Fatal("step 13: expected error for default worktree delete")
-	}
-	pe, ok = err.(*ProvisionError)
-	if !ok {
-		t.Fatalf("step 13: expected ProvisionError, got %T", err)
-	}
-	if pe.Code != ErrCannotDeleteDefault {
-		t.Fatalf("step 13: expected CANNOT_DELETE_DEFAULT, got %s", pe.Code)
-	}
-
 	// --- Step 14-15: Provision multiple worktrees, prune clean ---
 	spikeARoot := filepath.Join(repoRoot, ".worktrees", "spike-a")
 	spikeBRoot := filepath.Join(repoRoot, ".worktrees", "spike-b")
-	spikeASpec := WorkspaceSpec{
-		Name:         "ocr-service/spike-a",
-		VCS:          VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare, Branch: "spike-a"},
-		ProjectRoot:  spikeARoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-a",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeAParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "ocr-service/spike-a",
+			VCS:   VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeARoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	spikeBSpec := WorkspaceSpec{
-		Name:         "ocr-service/spike-b",
-		VCS:          VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare, Branch: "spike-b"},
-		ProjectRoot:  spikeBRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-b",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeBParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "ocr-service/spike-b",
+			VCS:   VCSTarget{Host: "gitlab.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeBRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err = p.Provision(store, spikeASpec)
+	_, err = p.Provision(store, spikeAParams)
 	if err != nil {
 		t.Fatalf("step 14: spike-a provision failed: %v", err)
 	}
-	_, err = p.Provision(store, spikeBSpec)
+	_, err = p.Provision(store, spikeBParams)
 	if err != nil {
 		t.Fatalf("step 14: spike-b provision failed: %v", err)
 	}
@@ -863,8 +833,8 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 
 	// --- Step 16: Prune with one dirty worktree ---
-	_, _ = p.Provision(store, spikeASpec)
-	_, _ = p.Provision(store, spikeBSpec)
+	_, _ = p.Provision(store, spikeAParams)
+	_, _ = p.Provision(store, spikeBParams)
 	os.WriteFile(filepath.Join(spikeARoot, "DIRTY.txt"), []byte("dirty\n"), 0644)
 
 	pruneResult, err = p.Prune(store, "ocr-service")
@@ -902,7 +872,7 @@ func TestFullWorktreeLifecycle(t *testing.T) {
 	}
 
 	// --- Step 19: Idempotent re-provision ---
-	inst3, err := p.Provision(store, defaultSpec)
+	inst3, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("step 19: idempotent re-provision failed: %v", err)
 	}
@@ -943,32 +913,32 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
 	// Step 1: Initial provision
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("initial provision failed: %v", err)
 	}
 	if inst.Status != StatusReady {
 		t.Fatalf("expected ready, got %s", inst.Status)
 	}
-	initialCommit := inst.HeadCommit
+	initialCommit := inst.DefaultWorktree().HeadCommit
 
 	// Step 2: Push a new commit upstream
 	pushUpstreamCommit(t, dir, "main", "update.txt", "new content\n")
 
 	// Step 3: Re-provision (idempotent path) — should hydrate and pull the new commit
-	inst2, err := p.Provision(store, spec)
+	inst2, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
@@ -977,10 +947,10 @@ func TestHydrate_IdempotentProvisionFetchesAndPulls(t *testing.T) {
 	}
 
 	// Verify HEAD advanced
-	if inst2.HeadCommit == initialCommit {
+	if inst2.DefaultWorktree().HeadCommit == initialCommit {
 		t.Fatal("expected HEAD to advance after hydration, but it stayed the same")
 	}
-	if inst2.HeadCommit == "" {
+	if inst2.DefaultWorktree().HeadCommit == "" {
 		t.Fatal("expected non-empty head commit after hydration")
 	}
 
@@ -1018,19 +988,19 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
 	// Initial provision
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("initial provision failed: %v", err)
 	}
@@ -1042,7 +1012,7 @@ func TestHydrate_DirtyWorktreeSkipped(t *testing.T) {
 	pushUpstreamCommit(t, dir, "main", "update.txt", "new content\n")
 
 	// Re-provision — hydration should skip the dirty worktree
-	inst2, err := p.Provision(store, spec)
+	inst2, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
@@ -1077,19 +1047,19 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
 	// Initial provision
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("initial provision failed: %v", err)
 	}
@@ -1102,7 +1072,7 @@ func TestHydrate_DivergedBranchSkipped(t *testing.T) {
 	pushUpstreamCommit(t, dir, "main", "upstream-only.txt", "upstream\n")
 
 	// Re-provision — hydration should skip due to divergence
-	inst2, err := p.Provision(store, spec)
+	inst2, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
@@ -1140,33 +1110,33 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	p := &Provisioner{}
 
 	// Provision default
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err := p.Provision(store, defaultSpec)
+	_, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
 	// Provision feature worktree
-	featureSpec := WorkspaceSpec{
-		Name:         "myrepo/feature-vpc",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
-		ProjectRoot:  featureRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature-vpc",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	featureParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/feature-vpc",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: featureRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err = p.Provision(store, featureSpec)
+	_, err = p.Provision(store, featureParams)
 	if err != nil {
 		t.Fatalf("feature provision failed: %v", err)
 	}
@@ -1185,7 +1155,7 @@ func TestHydrate_UnrelatedBranchNotTouched(t *testing.T) {
 	runGit(t, scratchClone, "push", "origin", "feature-vpc")
 
 	// Re-provision default — hydration should pull main but NOT touch feature-vpc
-	inst, err := p.Provision(store, defaultSpec)
+	inst, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("re-provision failed: %v", err)
 	}
@@ -1258,22 +1228,22 @@ func TestProvisionTemplate_BasicFlow(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("template provision failed: %v", err)
 	}
@@ -1317,7 +1287,7 @@ func TestProvisionTemplate_BasicFlow(t *testing.T) {
 	}
 
 	// AC: head commit is set
-	if inst.HeadCommit == "" {
+	if inst.DefaultWorktree() == nil || inst.DefaultWorktree().HeadCommit == "" {
 		t.Fatal("expected non-empty head commit")
 	}
 }
@@ -1337,22 +1307,22 @@ func TestProvisionTemplate_TemplateRemoteFetchOnly(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("template provision failed: %v", err)
 	}
@@ -1385,23 +1355,23 @@ func TestProvisionTemplate_OriginWhenVCSCloneURLSet(t *testing.T) {
 	p := &Provisioner{}
 
 	originURL := "https://github.com/org/my-project.git"
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		VCS:          VCSTarget{CloneURL: originURL, Host: "github.com"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name: "my-project",
+			VCS:  VCSTarget{CloneURL: originURL, Host: "github.com"},
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("template provision failed: %v", err)
 	}
@@ -1428,22 +1398,22 @@ func TestProvisionTemplate_NoOriginWhenVCSCloneURLEmpty(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("template provision failed: %v", err)
 	}
@@ -1470,22 +1440,22 @@ func TestProvisionTemplate_Events(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("template provision failed: %v", err)
 	}
@@ -1533,23 +1503,23 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
 	// First provision
-	inst1, err := p.Provision(store, spec)
+	inst1, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("first provision failed: %v", err)
 	}
@@ -1558,7 +1528,7 @@ func TestProvisionTemplate_Idempotent(t *testing.T) {
 	}
 
 	// Second provision (idempotent) — should return ready without error
-	inst2, err := p.Provision(store, spec)
+	inst2, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("idempotent provision failed: %v", err)
 	}
@@ -1582,22 +1552,22 @@ func TestProvisionTemplate_InspectReturnsTemplateRepo(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "my-project",
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		Template: &TemplateSource{
-			CloneURL: templateBare,
-			Host:     "github.com",
-			Repo:     "org/my-template",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "my-project",
+			Owner: currentUser(),
+			Template: &TemplateSource{
+				CloneURL: templateBare,
+				Host:     "github.com",
+				Repo:     "org/my-template",
+			},
 		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
@@ -1624,18 +1594,18 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
@@ -1649,12 +1619,8 @@ func TestResolveTemplateRepo_StandardClone(t *testing.T) {
 
 func TestValidateSpec_TemplateWithEmptyCloneURL(t *testing.T) {
 	spec := WorkspaceSpec{
-		Name:         "test",
-		ProjectRoot:  "/tmp/test",
-		RepoRoot:     "/tmp",
-		BareRoot:     "/tmp/.bare",
-		WorktreeName: "default",
-		Owner:        "user",
+		Name:  "test",
+		Owner: "user",
 		Template: &TemplateSource{
 			CloneURL: "",
 			Host:     "github.com",
@@ -1680,12 +1646,8 @@ func TestValidateSpec_TemplateWithEmptyCloneURL(t *testing.T) {
 func TestValidateSpec_TemplateWithoutVCSCloneURL(t *testing.T) {
 	// AC: Spec validation accepts empty VCS.CloneURL when Template is present
 	spec := WorkspaceSpec{
-		Name:         "test",
-		ProjectRoot:  "/tmp/test",
-		RepoRoot:     "/tmp",
-		BareRoot:     "/tmp/.bare",
-		WorktreeName: "default",
-		Owner:        "user",
+		Name:  "test",
+		Owner: "user",
 		Template: &TemplateSource{
 			CloneURL: "https://github.com/org/tmpl.git",
 			Host:     "github.com",
@@ -1738,18 +1700,18 @@ func TestProvision_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
 		ActivityLog: actLog,
 	}
 
-	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     filepath.Join(repoRoot, ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "test",
+			VCS:   VCSTarget{CloneURL: upstream},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1803,19 +1765,18 @@ func TestProvision_ActivityLogReceivesIDEEvents(t *testing.T) {
 		PortAllocator: NewPortAllocator(portFile),
 	}
 
-	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     filepath.Join(repoRoot, ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		IDE:          &IDESpecConfig{Adapter: "stub"},
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "test",
+			VCS:   VCSTarget{CloneURL: upstream},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
-	_, err := p.Provision(store, spec)
+	_, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1849,18 +1810,18 @@ func TestProvision_NilActivityLogDoesNotPanic(t *testing.T) {
 		// ActivityLog intentionally nil
 	}
 
-	spec := WorkspaceSpec{
-		Name:         "test",
-		VCS:          VCSTarget{CloneURL: upstream, Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     filepath.Join(repoRoot, ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "test",
+			VCS:   VCSTarget{CloneURL: upstream},
+			Owner: currentUser(),
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1885,18 +1846,18 @@ func TestProvision_EventRecordScopesCorrectOnIdempotent(t *testing.T) {
 		ActivityLog: actLog,
 	}
 
-	spec := WorkspaceSpec{
-		Name:         "myws",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     filepath.Join(repoRoot, ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        "testuser",
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myws",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: "https://github.com/org/repo.git"},
+			Owner: "testuser",
+		},
+		ProjectRoot: projectRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    filepath.Join(repoRoot, ".bare"),
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

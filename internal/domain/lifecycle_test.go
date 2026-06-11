@@ -269,7 +269,7 @@ func TestWorkspace_EventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	scope := EventScope{Kind: ScopeKindWorkspace, Name: "infra"}
 	inst := Workspace{
-		Spec:   WorkspaceSpec{Name: "infra"},
+		Name:   "infra",
 		Status: StatusProvisioning,
 		Events: []EventRecord{
 			{Scope: scope, Event: string(EventCloneStarted), Timestamp: ts},
@@ -304,16 +304,19 @@ func TestWorkspace_IDEInstanceEventsJSON(t *testing.T) {
 	ts := time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC)
 	scope := EventScope{Kind: ScopeKindIDE, Name: "infra"}
 	inst := Workspace{
+		Name:   "infra",
 		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "infra",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Events: []EventRecord{
-				{Scope: scope, Event: string(IDEEventStarted), Timestamp: ts},
-				{Scope: scope, Event: string(IDEEventReady), Timestamp: ts},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "infra",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Events: []EventRecord{
+					{Scope: scope, Event: string(IDEEventStarted), Timestamp: ts},
+					{Scope: scope, Event: string(IDEEventReady), Timestamp: ts},
+				},
+				Status: StatusReady,
 			},
-			Status: StatusReady,
 		},
 	}
 
@@ -330,11 +333,15 @@ func TestWorkspace_IDEInstanceEventsJSON(t *testing.T) {
 	if got.IDE == nil {
 		t.Fatal("IDE should not be nil after round-trip")
 	}
-	if len(got.IDE.Events) != 2 {
-		t.Fatalf("expected 2 IDE events, got %d", len(got.IDE.Events))
+	ide := got.IDE["default"]
+	if ide == nil {
+		t.Fatal("IDE[default] should not be nil after round-trip")
 	}
-	if got.IDE.Status != StatusReady {
-		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, got.IDE.Status)
+	if len(ide.Events) != 2 {
+		t.Fatalf("expected 2 IDE events, got %d", len(ide.Events))
+	}
+	if ide.Status != StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, ide.Status)
 	}
 }
 
@@ -376,7 +383,7 @@ func TestIDEStatusResolver_ImplementsInterface(t *testing.T) {
 
 func TestWorkspace_RecordEvent_AppendsWithCorrectScope(t *testing.T) {
 	w := &Workspace{
-		Spec: WorkspaceSpec{Name: "infra"},
+		Name: "infra",
 	}
 
 	w.RecordEvent(EventCloneStarted, "https://github.com/org/repo.git")
@@ -405,7 +412,7 @@ func TestWorkspace_RecordEvent_AppendsWithCorrectScope(t *testing.T) {
 
 func TestWorkspace_RecordEvent_ProjectsStatus(t *testing.T) {
 	w := &Workspace{
-		Spec: WorkspaceSpec{Name: "infra"},
+		Name: "infra",
 	}
 
 	w.RecordEvent(EventCloneStarted, "")
@@ -426,7 +433,7 @@ func TestWorkspace_RecordEvent_ProjectsStatus(t *testing.T) {
 
 func TestWorkspace_RecordEvent_FailedStatus(t *testing.T) {
 	w := &Workspace{
-		Spec: WorkspaceSpec{Name: "infra"},
+		Name: "infra",
 	}
 
 	w.RecordEvent(EventCloneStarted, "")
@@ -442,7 +449,7 @@ func TestWorkspace_RecordEvent_FailedStatus(t *testing.T) {
 
 func TestWorkspace_RecordEvent_MultipleEvents(t *testing.T) {
 	w := &Workspace{
-		Spec: WorkspaceSpec{Name: "infra/feat"},
+		Name: "infra/feat",
 	}
 
 	w.RecordEvent(EventCloneStarted, "url")
@@ -472,7 +479,9 @@ func TestWorkspace_RecordEvent_MultipleEvents(t *testing.T) {
 func TestWorkspace_UnmarshalJSON_OldFormat(t *testing.T) {
 	// Simulate old state.json with WorkspaceEventRecord format (no scope field)
 	oldJSON := `{
-		"spec": {"name": "infra", "vcs": {"host": "github.com", "repo": "org/repo", "branch": "main"}, "owner": "user"},
+		"name": "infra",
+		"repo": {"host": "github.com", "slug": "org/repo"},
+		"owner": "user",
 		"events": [
 			{"event": "clone_started", "timestamp": "2026-05-21T10:00:00Z", "detail": "https://github.com/org/repo.git"},
 			{"event": "clone_completed", "timestamp": "2026-05-21T10:01:00Z"},
@@ -511,7 +520,9 @@ func TestWorkspace_UnmarshalJSON_OldFormat(t *testing.T) {
 func TestWorkspace_UnmarshalJSON_NewFormat(t *testing.T) {
 	// New format with scope field
 	newJSON := `{
-		"spec": {"name": "infra", "vcs": {"host": "github.com", "repo": "org/repo", "branch": "main"}, "owner": "user"},
+		"name": "infra",
+		"repo": {"host": "github.com", "slug": "org/repo"},
+		"owner": "user",
 		"events": [
 			{"scope": "workspace:infra", "event": "clone_started", "timestamp": "2026-05-21T10:00:00Z"}
 		],

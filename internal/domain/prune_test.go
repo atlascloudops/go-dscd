@@ -28,16 +28,14 @@ func TestPrune_NotFound(t *testing.T) {
 func TestPrune_NoNonDefaultWorktrees(t *testing.T) {
 	store := newMemStore()
 	store.instances["myrepo"] = &Workspace{
-		Spec: WorkspaceSpec{
-			Name:         "myrepo",
-			IsDefault:    true,
-			WorktreeName: "default",
-			ProjectRoot:  "/tmp/fake/default",
-			RepoRoot:     "/tmp/fake",
-			BareRoot:     "/tmp/fake/.bare",
-			Owner:        "user",
+		Name:     "myrepo",
+		Owner:    "user",
+		RepoRoot: "/tmp/fake",
+		BareRoot: "/tmp/fake/.bare",
+		Status:   StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: "/tmp/fake/default", IsDefault: true},
 		},
-		Status: StatusReady,
 	}
 
 	p := &Provisioner{}
@@ -78,47 +76,47 @@ func TestPrune_AllClean(t *testing.T) {
 	p := &Provisioner{}
 
 	// Provision default + two branch worktrees
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err := p.Provision(store, defaultSpec)
+	_, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
-	spikeASpec := WorkspaceSpec{
-		Name:         "myrepo/spike-a",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-a"},
-		ProjectRoot:  spikeARoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-a",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeAParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-a",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeARoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err = p.Provision(store, spikeASpec)
+	_, err = p.Provision(store, spikeAParams)
 	if err != nil {
 		t.Fatalf("spike-a provision failed: %v", err)
 	}
 
-	spikeBSpec := WorkspaceSpec{
-		Name:         "myrepo/spike-b",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-b"},
-		ProjectRoot:  spikeBRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-b",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeBParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-b",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeBRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err = p.Provision(store, spikeBSpec)
+	_, err = p.Provision(store, spikeBParams)
 	if err != nil {
 		t.Fatalf("spike-b provision failed: %v", err)
 	}
@@ -188,41 +186,41 @@ func TestPrune_MixedCleanDirty(t *testing.T) {
 	p := &Provisioner{}
 
 	// Provision default + two branch worktrees
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, defaultSpec)
+	_, _ = p.Provision(store, defaultParams)
 
-	spikeASpec := WorkspaceSpec{
-		Name:         "myrepo/spike-a",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-a"},
-		ProjectRoot:  spikeARoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-a",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeAParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-a",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeARoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, spikeASpec)
+	_, _ = p.Provision(store, spikeAParams)
 
-	spikeBSpec := WorkspaceSpec{
-		Name:         "myrepo/spike-b",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-b"},
-		ProjectRoot:  spikeBRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-b",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeBParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-b",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeBRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, spikeBSpec)
+	_, _ = p.Provision(store, spikeBParams)
 
 	// Make spike-a dirty
 	os.WriteFile(filepath.Join(spikeARoot, "dirty.txt"), []byte("uncommitted\n"), 0644)
@@ -286,41 +284,41 @@ func TestPrune_AllDirty(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, defaultSpec)
+	_, _ = p.Provision(store, defaultParams)
 
-	spikeASpec := WorkspaceSpec{
-		Name:         "myrepo/spike-a",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-a"},
-		ProjectRoot:  spikeARoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-a",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeAParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-a",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeARoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, spikeASpec)
+	_, _ = p.Provision(store, spikeAParams)
 
-	spikeBSpec := WorkspaceSpec{
-		Name:         "myrepo/spike-b",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "spike-b"},
-		ProjectRoot:  spikeBRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "spike-b",
-		IsDefault:    false,
-		Owner:        currentUser(),
+	spikeBParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo/spike-b",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: spikeBRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, _ = p.Provision(store, spikeBSpec)
+	_, _ = p.Provision(store, spikeBParams)
 
 	// Make both dirty
 	os.WriteFile(filepath.Join(spikeARoot, "dirty.txt"), []byte("uncommitted\n"), 0644)
@@ -370,17 +368,17 @@ func TestPrune_OnlyDefault(t *testing.T) {
 	store := newMemStore()
 	p := &Provisioner{}
 
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		ProjectRoot: defaultRoot,
+		RepoRoot:    repoRoot,
+		BareRoot:    bareRoot,
 	}
-	_, err := p.Provision(store, defaultSpec)
+	_, err := p.Provision(store, defaultParams)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}

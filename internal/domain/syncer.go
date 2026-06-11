@@ -42,59 +42,71 @@ func (s *WorkspaceSyncer) Sync() (*SyncReport, error) {
 
 		now := time.Now().UTC()
 
-		for name, inst := range instances {
+		for name, ws := range instances {
 			report.WorkspacesChecked++
-			oldLifecycle := inst.Status
+			oldLifecycle := ws.Status
 
-			// Check clone — .git may be a directory (traditional clone) or
-			// a file (worktree with gitdir: pointer). Either means the
-			// workspace exists on disk.
+			// Check the default worktree's clone on disk
+			defaultWT := ws.DefaultWorktree()
+			if defaultWT == nil {
+				// No worktrees registered — check if we can find one
+				ws.LastSyncedAt = &now
+				continue
+			}
+
 			cloneExists := false
-			gitDir := filepath.Join(inst.Spec.ProjectRoot, ".git")
+			gitDir := filepath.Join(defaultWT.ProjectRoot, ".git")
 			if _, statErr := os.Stat(gitDir); statErr == nil {
 				cloneExists = true
-				if inst.Status == StatusPending || inst.Status == StatusFailed {
-					// Workspace appeared on disk — emit synthetic worktree_created
-					inst.RecordEvent(EventCloneDetected, "detected by sync")
-					s.appendToActivityLog(inst.Events[len(inst.Events)-1])
-					inst.LastError = nil
+				if ws.Status == StatusPending || ws.Status == StatusFailed {
+					ws.RecordEvent(EventCloneDetected, "detected by sync")
+					s.appendToActivityLog(ws.Events[len(ws.Events)-1])
+					ws.LastError = nil
 				}
 			} else {
-				if inst.Status == StatusReady {
+				if ws.Status == StatusReady {
 					msg := "worktree missing from disk"
-					inst.RecordEvent(EventProvisionFailed, msg)
-					s.appendToActivityLog(inst.Events[len(inst.Events)-1])
-					inst.LastError = &msg
+					ws.RecordEvent(EventProvisionFailed, msg)
+					s.appendToActivityLog(ws.Events[len(ws.Events)-1])
+					ws.LastError = &msg
 				}
 			}
 
-			// Refresh head commit
+			// Refresh head commit on default worktree
 			if cloneExists {
-				inst.HeadCommit = ResolveHeadCommit(inst.Spec.ProjectRoot, inst.Spec.Owner)
+				defaultWT.HeadCommit = ResolveHeadCommit(defaultWT.ProjectRoot, ws.Owner)
 			} else {
-				inst.HeadCommit = ""
+				defaultWT.HeadCommit = ""
 			}
 
-			// IDE health-check
-			if inst.IDE != nil && s.ideAdapter != nil {
-				ctx := IDEContext{
-					Owner:        inst.Spec.Owner,
-					WorktreePath: inst.Spec.ProjectRoot,
-					WorktreeName: inst.Spec.WorktreeName,
-					Port:         inst.IDE.Port,
+			// IDE health-check (iterate all worktree IDE instances)
+			for wtName, ide := range ws.IDE {
+				if ide == nil || s.ideAdapter == nil {
+					continue
 				}
-				wasReady := inst.IDE.Status == StatusReady
+				wt := ws.FindWorktree(wtName)
+				wtPath := ""
+				if wt != nil {
+					wtPath = wt.ProjectRoot
+				}
+				ctx := IDEContext{
+					Owner:        ws.Owner,
+					WorktreePath: wtPath,
+					WorktreeName: wtName,
+					Port:         ide.Port,
+				}
+				wasReady := ide.Status == StatusReady
 				err := s.ideAdapter.HealthCheck(ctx)
 				if err != nil && wasReady {
-					inst.IDE.RecordEvent(IDEEventStopped, "health check failed")
-					s.appendToActivityLog(inst.IDE.Events[len(inst.IDE.Events)-1])
+					ide.RecordEvent(IDEEventStopped, "health check failed")
+					s.appendToActivityLog(ide.Events[len(ide.Events)-1])
 				}
 			}
 
-			inst.LastSyncedAt = &now
+			ws.LastSyncedAt = &now
 
-			if inst.Status != oldLifecycle {
-				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, inst.Status)
+			if ws.Status != oldLifecycle {
+				change := fmt.Sprintf("%s: %s -> %s", name, oldLifecycle, ws.Status)
 				report.LifecycleChanges = append(report.LifecycleChanges, change)
 			}
 		}
@@ -108,6 +120,5 @@ func (s *WorkspaceSyncer) appendToActivityLog(record EventRecord) {
 	if s.activityLog == nil {
 		return
 	}
-	// Best-effort: activity log write failures are non-fatal for sync.
 	_ = s.activityLog.Append(record)
 }

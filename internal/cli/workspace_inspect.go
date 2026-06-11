@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/atlascloudops/go-dscd/internal/domain"
 	"github.com/spf13/cobra"
@@ -25,7 +24,7 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 1)
 			}
 
-			inst, ok := instances[name]
+			ws, ok := instances[name]
 			if !ok {
 				resp := domain.ErrorResponse("workspace.inspect", domain.ErrorInfo{
 					Code:    domain.ErrNotFound,
@@ -34,15 +33,20 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 1)
 			}
 
-			// Enumerate worktrees from the bare clone (inspect-only, not list)
-			worktrees, _ := domain.ListWorktrees(inst.Spec.BareRoot, inst.Spec.Owner)
+			// Build IDE info map from aggregate
+			var ideInfoMap map[string]*domain.IDEInfo
+			if len(ws.IDE) > 0 {
+				ideInfoMap = make(map[string]*domain.IDEInfo, len(ws.IDE))
+				for wtName, ide := range ws.IDE {
+					ideInfoMap[wtName] = domain.IDEInfoFromInstance(ide)
+				}
+			}
+
 			inspectData := domain.WorkspaceInspectData{
-				Workspace: *inst,
-				BareRoot:         inst.Spec.BareRoot,
-				WorktreeCount:    len(worktrees),
-				Worktrees:        worktrees,
-				IDEInfo:          domain.IDEInfoFromInstance(inst.IDE),
-				TemplateRepo:     domain.ResolveTemplateRepo(inst.Spec.BareRoot, inst.Spec.Owner),
+				Workspace:     *ws,
+				WorktreeCount: len(ws.Worktrees),
+				IDEInfo:       ideInfoMap,
+				TemplateRepo:  domain.ResolveTemplateRepo(ws.BareRoot, ws.Owner),
 			}
 
 			if jsonOutput {
@@ -50,31 +54,38 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 				return outputResponse(resp, 0)
 			}
 
-			fmt.Fprintf(os.Stdout, "Name:            %s\n", inst.Spec.Name)
-			fmt.Fprintf(os.Stdout, "Worktree:        %s\n", inst.Spec.WorktreeName)
-			fmt.Fprintf(os.Stdout, "Repo:            %s\n", inst.Spec.VCS.Repo)
-			fmt.Fprintf(os.Stdout, "Branch:          %s\n", inst.Spec.VCS.Branch)
-			fmt.Fprintf(os.Stdout, "Project Root:    %s\n", inst.Spec.ProjectRoot)
-			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", inspectData.BareRoot)
-			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", inst.Status)
-			fmt.Fprintf(os.Stdout, "Head Commit:     %s\n", inst.HeadCommit)
+			fmt.Fprintf(os.Stdout, "Name:            %s\n", ws.Name)
+			fmt.Fprintf(os.Stdout, "Repo:            %s/%s\n", ws.Repo.Host, ws.Repo.Slug)
+			fmt.Fprintf(os.Stdout, "Bare Root:       %s\n", ws.BareRoot)
+			fmt.Fprintf(os.Stdout, "Lifecycle:       %s\n", ws.Status)
 			if inspectData.TemplateRepo != "" {
 				fmt.Fprintf(os.Stdout, "Template:        %s\n", inspectData.TemplateRepo)
 			}
 			fmt.Fprintf(os.Stdout, "Worktree Count:  %d\n", inspectData.WorktreeCount)
-			if len(inspectData.Worktrees) > 0 {
-				fmt.Fprintf(os.Stdout, "Worktrees:       %s\n", strings.Join(inspectData.Worktrees, ", "))
-			}
-			if inst.IDE != nil {
-				fmt.Fprintf(os.Stdout, "IDE:             %s (port %d, %s)\n", inst.IDE.Adapter, inst.IDE.Port, inst.IDE.Status)
-			}
-			if len(inst.Events) > 0 {
-				fmt.Fprintf(os.Stdout, "Events:\n")
-				start := 0
-				if len(inst.Events) > 10 {
-					start = len(inst.Events) - 10
+
+			if len(ws.Worktrees) > 0 {
+				fmt.Fprintf(os.Stdout, "\nWorktrees:\n")
+				fmt.Fprintf(os.Stdout, "  %-16s %-16s %s\n", "NAME", "BRANCH", "PROJECT ROOT")
+				for _, wt := range ws.Worktrees {
+					fmt.Fprintf(os.Stdout, "  %-16s %-16s %s\n", wt.Name, wt.Branch, wt.ProjectRoot)
 				}
-				for _, ev := range inst.Events[start:] {
+			}
+
+			if len(ws.IDE) > 0 {
+				fmt.Fprintf(os.Stdout, "\nIDE:\n")
+				fmt.Fprintf(os.Stdout, "  %-16s %-20s %-8s %s\n", "WORKTREE", "ADAPTER", "PORT", "STATUS")
+				for wtName, ide := range ws.IDE {
+					fmt.Fprintf(os.Stdout, "  %-16s %-20s %-8d %s\n", wtName, ide.Adapter, ide.Port, ide.Status)
+				}
+			}
+
+			if len(ws.Events) > 0 {
+				fmt.Fprintf(os.Stdout, "\nEvents:\n")
+				start := 0
+				if len(ws.Events) > 10 {
+					start = len(ws.Events) - 10
+				}
+				for _, ev := range ws.Events[start:] {
 					ts := ev.Timestamp.Format("2006-01-02T15:04:05Z")
 					if ev.Detail != "" {
 						fmt.Fprintf(os.Stdout, "  %s  %s  (%s)\n", ts, ev.Event, ev.Detail)
@@ -83,14 +94,14 @@ func newWorkspaceInspectCmd(store domain.StateStore) *cobra.Command {
 					}
 				}
 			}
-			if inst.LastSyncedAt != nil {
-				fmt.Fprintf(os.Stdout, "Last Synced:     %s\n", inst.LastSyncedAt.Format("2006-01-02T15:04:05Z"))
+			if ws.LastSyncedAt != nil {
+				fmt.Fprintf(os.Stdout, "Last Synced:     %s\n", ws.LastSyncedAt.Format("2006-01-02T15:04:05Z"))
 			}
-			if inst.ProvisionedAt != nil {
-				fmt.Fprintf(os.Stdout, "Provisioned:     %s\n", inst.ProvisionedAt.Format("2006-01-02T15:04:05Z"))
+			if ws.ProvisionedAt != nil {
+				fmt.Fprintf(os.Stdout, "Provisioned:     %s\n", ws.ProvisionedAt.Format("2006-01-02T15:04:05Z"))
 			}
-			if inst.LastError != nil {
-				fmt.Fprintf(os.Stdout, "Last Error:      %s\n", *inst.LastError)
+			if ws.LastError != nil {
+				fmt.Fprintf(os.Stdout, "Last Error:      %s\n", *ws.LastError)
 			}
 			return nil
 		},
