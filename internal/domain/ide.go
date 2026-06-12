@@ -143,14 +143,23 @@ func (a *CodeServerAdapter) Name() string {
 	return "openvscode-server"
 }
 
+// sanitizeWorktreeName replaces forward slashes in worktree names with double
+// dashes so the result is safe for use in systemd unit names and file paths.
+// Example: "feat/bar" -> "feat--bar"
+func sanitizeWorktreeName(name string) string {
+	return strings.ReplaceAll(name, "/", "--")
+}
+
 // UnitName derives the systemd unit name deterministically from IDEContext fields.
+// Slashes in worktree names are replaced with double dashes for systemd safety.
 func UnitName(ctx IDEContext) string {
-	return fmt.Sprintf("openvscode-server@%s--%s.service", ctx.Owner, ctx.WorktreeName)
+	return fmt.Sprintf("openvscode-server@%s--%s.service", ctx.Owner, sanitizeWorktreeName(ctx.WorktreeName))
 }
 
 // envFilePath returns the path to the per-instance environment file.
+// Slashes in worktree names are replaced with double dashes for filesystem safety.
 func (a *CodeServerAdapter) envFilePath(ctx IDEContext) string {
-	return filepath.Join(a.EnvDir, fmt.Sprintf("%s--%s.env", ctx.Owner, ctx.WorktreeName))
+	return filepath.Join(a.EnvDir, fmt.Sprintf("%s--%s.env", ctx.Owner, sanitizeWorktreeName(ctx.WorktreeName)))
 }
 
 // Start writes the environment file, starts the systemd unit, and polls for

@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
+func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.ActivityLog, workspaceRoot *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "provision <spec-json>",
 		Short: "Provision a workspace from a JSON spec",
@@ -25,13 +25,23 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 				return outputResponse(resp, 1)
 			}
 
-			provisioner := &domain.Provisioner{
-				IDEAdapter:    domain.NewCodeServerAdapter(),
-				PortAllocator: domain.NewPortAllocator(defaultPortFile),
-				ActivityLog:   activityLog,
+			// Resolve workspace root: flag > env > default
+			wsRoot := *workspaceRoot
+			if wsRoot == "" {
+				wsRoot = domain.ResolveWorkspaceRoot(spec.Owner)
 			}
 
-			inst, err := provisioner.Provision(store, spec)
+			params := domain.ProvisionParams{
+				Spec:          spec,
+				WorkspaceRoot: wsRoot,
+			}
+
+			provisioner := &domain.Provisioner{
+				ActivityLog: activityLog,
+				// IDE startup is separate — triggered via `workspace ide start`
+			}
+
+			ws, err := provisioner.Provision(store, params)
 			if err != nil {
 				if pe, ok := err.(*domain.ProvisionError); ok {
 					resp := domain.ErrorResponse("workspace.provision", domain.ErrorInfo{
@@ -48,7 +58,7 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 				return outputResponse(resp, 1)
 			}
 
-			resp := domain.OkResponse("workspace.provision", inst)
+			resp := domain.OkResponse("workspace.provision", ws)
 			return outputResponse(resp, 0)
 		},
 	}

@@ -167,40 +167,28 @@ func TestListWorktrees_RealGit(t *testing.T) {
 
 	repoRoot := filepath.Join(dir, "code", "github.com", "test", "myrepo")
 	bareRoot := filepath.Join(repoRoot, ".bare")
-	defaultRoot := filepath.Join(repoRoot, "default")
-	featureRoot := filepath.Join(repoRoot, ".worktrees", "feature-vpc")
+	_ = filepath.Join(repoRoot, "default")
+	_ = filepath.Join(repoRoot, ".worktrees", "feature-vpc")
 
 	store := newMemStore()
 	p := &Provisioner{}
 
 	// Provision default (bare clone + default worktree)
-	defaultSpec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "main"},
-		ProjectRoot:  defaultRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
+	defaultParams := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
 	}
-	if _, err := p.Provision(store, defaultSpec); err != nil {
+	if _, err := p.Provision(store, defaultParams); err != nil {
 		t.Fatalf("default provision failed: %v", err)
 	}
 
-	// Provision feature worktree
-	featureSpec := WorkspaceSpec{
-		Name:         "myrepo/feature-vpc",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: upstreamBare, Branch: "feature-vpc"},
-		ProjectRoot:  featureRoot,
-		RepoRoot:     repoRoot,
-		BareRoot:     bareRoot,
-		WorktreeName: "feature-vpc",
-		IsDefault:    false,
-		Owner:        currentUser(),
-	}
-	if _, err := p.Provision(store, featureSpec); err != nil {
-		t.Fatalf("feature provision failed: %v", err)
+	// Add feature worktree via AddWorktree
+	if _, err := p.AddWorktree(store, "myrepo", "feature-vpc"); err != nil {
+		t.Fatalf("AddWorktree feature-vpc failed: %v", err)
 	}
 
 	// AC: ListWorktrees returns both worktree names, excluding the bare root

@@ -40,7 +40,6 @@ func newWorkspacePruneCmd(store domain.StateStore, activityLog *domain.ActivityL
 
 			resp := domain.OkResponse("workspace.prune", result)
 
-			// Human-readable output when not JSON
 			if !jsonOutput {
 				if len(result.Pruned) == 0 && len(result.Skipped) == 0 {
 					fmt.Println(result.Message)
@@ -48,28 +47,13 @@ func newWorkspacePruneCmd(store domain.StateStore, activityLog *domain.ActivityL
 				}
 
 				if len(result.Pruned) > 0 {
-					// Extract worktree names from full workspace names
-					var wtNames []string
-					for _, name := range result.Pruned {
-						parts := strings.SplitN(name, "/", 2)
-						if len(parts) == 2 {
-							wtNames = append(wtNames, parts[1])
-						} else {
-							wtNames = append(wtNames, name)
-						}
-					}
-					fmt.Printf("Pruned:   %s\n", strings.Join(wtNames, ", "))
+					fmt.Printf("Pruned:   %s\n", strings.Join(result.Pruned, ", "))
 				}
 
 				if len(result.Skipped) > 0 {
 					var skipParts []string
 					for _, s := range result.Skipped {
-						parts := strings.SplitN(s.Name, "/", 2)
-						wtName := s.Name
-						if len(parts) == 2 {
-							wtName = parts[1]
-						}
-						skipParts = append(skipParts, fmt.Sprintf("%s (%s)", wtName, s.Reason))
+						skipParts = append(skipParts, fmt.Sprintf("%s (%s)", s.Name, s.Reason))
 					}
 					fmt.Printf("Skipped:  %s\n", strings.Join(skipParts, ", "))
 				}

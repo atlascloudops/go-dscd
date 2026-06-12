@@ -22,6 +22,11 @@ const (
 	EventHydrateStarted   WorkspaceEvent = "hydrate_started"
 	EventHydrateCompleted WorkspaceEvent = "hydrate_completed"
 	EventHydrateSkipped   WorkspaceEvent = "hydrate_skipped"
+
+	// Submodule events — informational only; these do NOT affect workspace lifecycle status.
+	EventSubmoduleInitStarted   WorkspaceEvent = "submodule_init_started"
+	EventSubmoduleInitCompleted WorkspaceEvent = "submodule_init_completed"
+	EventSubmoduleInitSkipped   WorkspaceEvent = "submodule_init_skipped"
 )
 
 // workspaceInfoEvents are workspace events that do not affect lifecycle status.
@@ -32,6 +37,9 @@ var workspaceInfoEvents = map[string]bool{
 	string(EventTemplateCloneStarted):    true,
 	string(EventTemplateCloneCompleted):  true,
 	string(EventTemplateReinitCompleted): true,
+	string(EventSubmoduleInitStarted):    true,
+	string(EventSubmoduleInitCompleted):  true,
+	string(EventSubmoduleInitSkipped):    true,
 }
 
 // WorkspaceEventRecord is a single immutable event entry in the provisioning

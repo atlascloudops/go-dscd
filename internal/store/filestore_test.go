@@ -20,38 +20,28 @@ func TestRoundTrip(t *testing.T) {
 	errMsg := "test error"
 	instances := map[string]*domain.Workspace{
 		"ws1": {
-			Spec: domain.WorkspaceSpec{
-				Name: "ws1",
-				VCS: domain.VCSTarget{
-					Host:     "github.com",
-					Repo:     "org/repo1",
-					Branch:   "main",
-					CloneURL: "https://github.com/org/repo1.git",
-				},
-				PatName:     "gh-token",
-				ProjectRoot: "/home/user/code/repo1",
-				Owner:       "user",
+			Name:    "ws1",
+			Repo:    domain.RepoInfo{Host: "github.com", Slug: "org/repo1", CloneURL: "https://github.com/org/repo1.git"},
+			Owner:   "user",
+			PatName: "gh-token",
+			Worktrees: []domain.Worktree{
+				{Name: "default", ProjectRoot: "/home/user/code/repo1", IsDefault: true},
 			},
-			Status:      domain.StatusReady,
-			ProvisionedAt:  &now,
-			LastError:      nil,
+			Status:        domain.StatusReady,
+			ProvisionedAt: &now,
+			LastError:     nil,
 		},
 		"ws2": {
-			Spec: domain.WorkspaceSpec{
-				Name: "ws2",
-				VCS: domain.VCSTarget{
-					Host:     "gitlab.com",
-					Repo:     "org/repo2",
-					Branch:   "dev",
-					CloneURL: "https://gitlab.com/org/repo2.git",
-				},
-				PatName:     "gl-token",
-				ProjectRoot: "/home/user/code/repo2",
-				Owner:       "user",
+			Name:    "ws2",
+			Repo:    domain.RepoInfo{Host: "gitlab.com", Slug: "org/repo2", CloneURL: "https://gitlab.com/org/repo2.git"},
+			Owner:   "user",
+			PatName: "gl-token",
+			Worktrees: []domain.Worktree{
+				{Name: "default", ProjectRoot: "/home/user/code/repo2", IsDefault: true},
 			},
-			Status:      domain.StatusFailed,
-			ProvisionedAt:  &now,
-			LastError:      &errMsg,
+			Status:        domain.StatusFailed,
+			ProvisionedAt: &now,
+			LastError:     &errMsg,
 		},
 	}
 
@@ -69,7 +59,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ws1 := loaded["ws1"]
-	if ws1.Spec.Name != "ws1" || ws1.Status != domain.StatusReady {
+	if ws1.Name != "ws1" || ws1.Status != domain.StatusReady {
 		t.Fatalf("ws1 mismatch: %+v", ws1)
 	}
 	if ws1.ProvisionedAt == nil || !ws1.ProvisionedAt.Equal(now) {
@@ -77,7 +67,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	ws2 := loaded["ws2"]
-	if ws2.Spec.Name != "ws2" || ws2.Status != domain.StatusFailed {
+	if ws2.Name != "ws2" || ws2.Status != domain.StatusFailed {
 		t.Fatalf("ws2 mismatch: %+v", ws2)
 	}
 	if ws2.LastError == nil || *ws2.LastError != errMsg {
@@ -93,31 +83,26 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 	ts := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	instances := map[string]*domain.Workspace{
 		"ws-ide": {
-			Spec: domain.WorkspaceSpec{
-				Name: "ws-ide",
-				VCS: domain.VCSTarget{
-					Host:     "github.com",
-					Repo:     "org/repo1",
-					Branch:   "main",
-					CloneURL: "https://github.com/org/repo1.git",
-				},
-				ProjectRoot:  "/home/user/code/repo1/default",
-				RepoRoot:     "/home/user/code/repo1",
-				BareRoot:     "/home/user/code/repo1/.bare",
-				WorktreeName: "default",
-				Owner:        "user",
-				IDE:          &domain.IDESpecConfig{Adapter: "openvscode-server"},
+			Name:     "ws-ide",
+			Repo:     domain.RepoInfo{Host: "github.com", Slug: "org/repo1", CloneURL: "https://github.com/org/repo1.git"},
+			RepoRoot: "/home/user/code/repo1",
+			BareRoot: "/home/user/code/repo1/.bare",
+			Owner:    "user",
+			Worktrees: []domain.Worktree{
+				{Name: "default", ProjectRoot: "/home/user/code/repo1/default", IsDefault: true},
 			},
-			Status:         domain.StatusReady,
-			IDE: &domain.IDEInstance{
-				Name:    "ws-ide",
-				Adapter: "openvscode-server",
-				Port:    9100,
-				Events: []domain.EventRecord{
-					{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventStarted), Timestamp: ts, Detail: "port=9100"},
-					{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventReady), Timestamp: ts, Detail: "port=9100"},
+			Status: domain.StatusReady,
+			IDE: map[string]*domain.IDEInstance{
+				"default": {
+					Name:    "ws-ide",
+					Adapter: "openvscode-server",
+					Port:    9100,
+					Events: []domain.EventRecord{
+						{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventStarted), Timestamp: ts, Detail: "port=9100"},
+						{Scope: domain.EventScope{Kind: domain.ScopeKindIDE, Name: "ws-ide"}, Event: string(domain.IDEEventReady), Timestamp: ts, Detail: "port=9100"},
+					},
+					Status: domain.StatusReady,
 				},
-				Status: domain.StatusReady,
 			},
 		},
 	}
@@ -136,28 +121,32 @@ func TestRoundTrip_IDEInstance(t *testing.T) {
 		t.Fatal("expected ws-ide in loaded instances")
 	}
 	if ws.IDE == nil {
-		t.Fatal("expected IDE instance after round-trip")
+		t.Fatal("expected IDE map after round-trip")
 	}
-	if ws.IDE.Adapter != "openvscode-server" {
-		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", ws.IDE.Adapter)
+	ide := ws.IDE["default"]
+	if ide == nil {
+		t.Fatal("expected IDE instance for 'default' worktree after round-trip")
 	}
-	if ws.IDE.Port != 9100 {
-		t.Errorf("IDE.Port: expected 9100, got %d", ws.IDE.Port)
+	if ide.Adapter != "openvscode-server" {
+		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", ide.Adapter)
 	}
-	if len(ws.IDE.Events) != 2 {
-		t.Fatalf("IDE.Events: expected 2, got %d", len(ws.IDE.Events))
+	if ide.Port != 9100 {
+		t.Errorf("IDE.Port: expected 9100, got %d", ide.Port)
 	}
-	if ws.IDE.Events[0].Event != string(domain.IDEEventStarted) {
-		t.Errorf("IDE.Events[0]: expected %q, got %q", domain.IDEEventStarted, ws.IDE.Events[0].Event)
+	if len(ide.Events) != 2 {
+		t.Fatalf("IDE.Events: expected 2, got %d", len(ide.Events))
 	}
-	if ws.IDE.Events[1].Event != string(domain.IDEEventReady) {
-		t.Errorf("IDE.Events[1]: expected %q, got %q", domain.IDEEventReady, ws.IDE.Events[1].Event)
+	if ide.Events[0].Event != string(domain.IDEEventStarted) {
+		t.Errorf("IDE.Events[0]: expected %q, got %q", domain.IDEEventStarted, ide.Events[0].Event)
 	}
-	if ws.IDE.Name != "ws-ide" {
-		t.Errorf("IDE.Name: expected %q, got %q", "ws-ide", ws.IDE.Name)
+	if ide.Events[1].Event != string(domain.IDEEventReady) {
+		t.Errorf("IDE.Events[1]: expected %q, got %q", domain.IDEEventReady, ide.Events[1].Event)
 	}
-	if ws.IDE.Status != domain.StatusReady {
-		t.Errorf("IDE.Status: expected %q, got %q", domain.StatusReady, ws.IDE.Status)
+	if ide.Name != "ws-ide" {
+		t.Errorf("IDE.Name: expected %q, got %q", "ws-ide", ide.Name)
+	}
+	if ide.Status != domain.StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", domain.StatusReady, ide.Status)
 	}
 }
 
@@ -181,15 +170,8 @@ func TestRoundTrip_Credentials(t *testing.T) {
 	state := &domain.DaemonState{
 		Workspaces: map[string]*domain.Workspace{
 			"ws1": {
-				Spec: domain.WorkspaceSpec{
-					Name: "ws1",
-					VCS: domain.VCSTarget{
-						Host:   "github.com",
-						Repo:   "org/repo1",
-						Branch: "main",
-					},
-					Owner: "jperez",
-				},
+				Name:   "ws1",
+				Owner:  "jperez",
 				Status: domain.StatusReady,
 			},
 		},
@@ -265,11 +247,9 @@ func TestBackwardCompat_NoCredentialsKey(t *testing.T) {
 		"updated_at": "2026-05-21T10:00:00Z",
 		"workspaces": {
 			"ws1": {
-				"spec": {
-					"name": "ws1",
-					"vcs": {"host": "github.com", "repo": "org/repo1", "branch": "main"},
-					"owner": "user"
-				},
+				"name": "ws1",
+				"repo": {"host": "github.com", "slug": "org/repo1"},
+				"owner": "user",
 				"status": "ready"
 			}
 		}
@@ -317,7 +297,8 @@ func TestSave_PreservesCredentials(t *testing.T) {
 	// Use workspace-only Save — credentials should be preserved
 	if err := s.Save(map[string]*domain.Workspace{
 		"ws1": {
-			Spec: domain.WorkspaceSpec{Name: "ws1", Owner: "jperez"},
+			Name:  "ws1",
+			Owner: "jperez",
 		},
 	}); err != nil {
 		t.Fatal(err)

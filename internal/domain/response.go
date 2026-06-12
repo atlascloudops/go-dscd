@@ -17,28 +17,24 @@ type ErrorInfo struct {
 }
 
 const (
-	ErrSpecInvalid   = "SPEC_INVALID"
-	ErrCloneFailed   = "CLONE_FAILED"
-	ErrStateCorrupt  = "STATE_CORRUPT"
-	ErrNotFound      = "NOT_FOUND"
-	ErrAlreadyExists = "ALREADY_EXISTS"
+	ErrSpecInvalid         = "SPEC_INVALID"
+	ErrCloneFailed         = "CLONE_FAILED"
+	ErrStateCorrupt        = "STATE_CORRUPT"
+	ErrNotFound            = "NOT_FOUND"
+	ErrAlreadyExists       = "ALREADY_EXISTS"
 	ErrLockFailed          = "LOCK_FAILED"
 	ErrWorktreeDirty       = "WORKTREE_DIRTY"
 	ErrCannotDeleteDefault = "CANNOT_DELETE_DEFAULT"
 )
 
-// IDEInfo is the clean response object for IDE state — exposed in inspect and
-// provision responses. It collapses the internal IDEInstance (with its full event
-// stream) into the fields the client needs: adapter name, port, and lifecycle
-// status string.
+// IDEInfo is the clean response object for IDE state.
 type IDEInfo struct {
 	Adapter string `json:"adapter"`
 	Port    int    `json:"port"`
 	Status  string `json:"status"`
 }
 
-// IDEInfoFromInstance builds an IDEInfo from an IDEInstance, or returns nil when
-// the instance is nil. Status is the string representation of the IDE lifecycle.
+// IDEInfoFromInstance builds an IDEInfo from an IDEInstance, or returns nil when nil.
 func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
 	if ide == nil {
 		return nil
@@ -54,40 +50,39 @@ func IDEInfoFromInstance(ide *IDEInstance) *IDEInfo {
 	}
 }
 
-// WorkspaceInspectData extends Workspace with worktree diagnostics for inspect responses.
-// The IDEInfo field provides a clean adapter/port/status view when IDE state exists.
-// TemplateRepo is derived from the "template" git remote and omitted for standard clones.
+// WorkspaceInspectData is the response shape for workspace inspect.
+// It provides worktree details and IDE info from the aggregate.
 type WorkspaceInspectData struct {
 	Workspace
-	BareRoot      string   `json:"bare_root"`
 	WorktreeCount int      `json:"worktree_count"`
-	Worktrees     []string `json:"worktrees"`
-	IDEInfo       *IDEInfo `json:"ide_info,omitempty"`
+	IDEInfo       map[string]*IDEInfo `json:"ide_info,omitempty"`
 	TemplateRepo  string   `json:"template_repo,omitempty"`
 }
 
-// WorkspaceListItem is the per-workspace entry in a list response. It includes
-// an optional IDEPort field (omitted when zero/IDE not ready) so clients can
-// discover tunnel targets without inspecting each workspace individually.
+// WorkspaceListItem is the per-workspace entry in a list response.
 type WorkspaceListItem struct {
-	Spec       WorkspaceSpec `json:"spec"`
-	Status     Status        `json:"status,omitempty"`
-	HeadCommit string        `json:"head_commit,omitempty"`
-	IDEPort    int           `json:"ide_port,omitempty"`
-	Events     []EventRecord `json:"events,omitempty"`
+	Name          string        `json:"name"`
+	Repo          RepoInfo      `json:"repo"`
+	Status        Status        `json:"status,omitempty"`
+	WorktreeCount int           `json:"worktree_count"`
+	IDEPort       int           `json:"ide_port,omitempty"`
+	Events        []EventRecord `json:"events,omitempty"`
 }
 
 // WorkspaceListItemFromInstance builds a WorkspaceListItem from a Workspace.
-// IDEPort is set only when the IDE is active (status == Ready).
-func WorkspaceListItemFromInstance(inst *Workspace) WorkspaceListItem {
+func WorkspaceListItemFromInstance(ws *Workspace) WorkspaceListItem {
 	item := WorkspaceListItem{
-		Spec:       inst.Spec,
-		Status:     inst.Status,
-		HeadCommit: inst.HeadCommit,
-		Events:     inst.Events,
+		Name:          ws.Name,
+		Repo:          ws.Repo,
+		Status:        ws.Status,
+		WorktreeCount: len(ws.Worktrees),
+		Events:        ws.Events,
 	}
-	if inst.IDE != nil && inst.IDE.Status == StatusReady {
-		item.IDEPort = inst.IDE.Port
+	// Surface the default worktree's IDE port when it is ready.
+	if defWt := ws.DefaultWorktree(); defWt != nil {
+		if ide := ws.IDEForWorktree(defWt.Name); ide != nil && ide.Status == StatusReady {
+			item.IDEPort = ide.Port
+		}
 	}
 	return item
 }

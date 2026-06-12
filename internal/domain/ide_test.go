@@ -89,6 +89,15 @@ func TestUnitName_BranchWorktree(t *testing.T) {
 	}
 }
 
+func TestUnitName_SlashInWorktreeName(t *testing.T) {
+	ctx := IDEContext{Owner: "alice", WorktreeName: "feat/bar"}
+	got := UnitName(ctx)
+	want := "openvscode-server@alice--feat--bar.service"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
 func TestCodeServerAdapter_Start(t *testing.T) {
 	dir := t.TempDir()
 	runner := newMockSystemdRunner()
@@ -285,16 +294,19 @@ func TestIDEInstance_JSONRoundTrip(t *testing.T) {
 func TestWorkspace_IDEInstanceJSON(t *testing.T) {
 	scope := EventScope{Kind: ScopeKindIDE, Name: "myrepo"}
 	inst := Workspace{
+		Name:   "myrepo",
 		Status: StatusPending,
-		IDE: &IDEInstance{
-			Name:    "myrepo",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Events: []EventRecord{
-				{Scope: scope, Event: string(IDEEventStarted), Timestamp: time.Now().UTC().Truncate(time.Second)},
-				{Scope: scope, Event: string(IDEEventReady), Timestamp: time.Now().UTC().Truncate(time.Second)},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "myrepo",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Events: []EventRecord{
+					{Scope: scope, Event: string(IDEEventStarted), Timestamp: time.Now().UTC().Truncate(time.Second)},
+					{Scope: scope, Event: string(IDEEventReady), Timestamp: time.Now().UTC().Truncate(time.Second)},
+				},
+				Status: StatusReady,
 			},
-			Status: StatusReady,
 		},
 	}
 
@@ -311,25 +323,30 @@ func TestWorkspace_IDEInstanceJSON(t *testing.T) {
 	if got.IDE == nil {
 		t.Fatal("IDE should not be nil after round-trip")
 	}
-	if got.IDE.Name != "myrepo" {
-		t.Errorf("IDE.Name: expected myrepo, got %q", got.IDE.Name)
+	ide := got.IDE["default"]
+	if ide == nil {
+		t.Fatal("IDE[default] should not be nil after round-trip")
 	}
-	if got.IDE.Port != 9100 {
-		t.Errorf("IDE.Port: expected 9100, got %d", got.IDE.Port)
+	if ide.Name != "myrepo" {
+		t.Errorf("IDE.Name: expected myrepo, got %q", ide.Name)
 	}
-	if got.IDE.Adapter != "openvscode-server" {
-		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", got.IDE.Adapter)
+	if ide.Port != 9100 {
+		t.Errorf("IDE.Port: expected 9100, got %d", ide.Port)
 	}
-	if got.IDE.Status != StatusReady {
-		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, got.IDE.Status)
+	if ide.Adapter != "openvscode-server" {
+		t.Errorf("IDE.Adapter: expected openvscode-server, got %q", ide.Adapter)
 	}
-	if len(got.IDE.Events) != 2 {
-		t.Errorf("IDE.Events: expected 2, got %d", len(got.IDE.Events))
+	if ide.Status != StatusReady {
+		t.Errorf("IDE.Status: expected %q, got %q", StatusReady, ide.Status)
+	}
+	if len(ide.Events) != 2 {
+		t.Errorf("IDE.Events: expected 2, got %d", len(ide.Events))
 	}
 }
 
 func TestWorkspace_IDEInstanceOmittedWhenNil(t *testing.T) {
 	inst := Workspace{
+		Name:   "myrepo",
 		Status: StatusPending,
 	}
 
@@ -493,74 +510,34 @@ func TestProvision_WithIDE_StartsAdapter(t *testing.T) {
 
 	store := newMemStore()
 
-	// Create a fake worktree on disk
-	projectRoot := filepath.Join(dir, "repo", "default")
+	// Create a fake worktree on disk at the derived path
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: dir,
+	}
+	projectRoot := params.ProjectRoot()
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		IDE:          &IDESpecConfig{Adapter: "openvscode-server"},
-	}
-
 	p := &Provisioner{
-		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
 
-	// IDE should be started and ready
-	if inst.IDE == nil {
-		t.Fatal("expected IDE instance to be set")
-	}
-	if inst.IDE.Status != StatusReady {
-		t.Errorf("expected IDE status ready, got %s", inst.IDE.Status)
-	}
-	if inst.IDE.Port < 9100 || inst.IDE.Port > 9199 {
-		t.Errorf("expected port in range 9100-9199, got %d", inst.IDE.Port)
-	}
-	if inst.IDE.Adapter != "openvscode-server" {
-		t.Errorf("expected adapter 'openvscode-server', got %q", inst.IDE.Adapter)
+	// Provision does NOT start IDE — IDE startup is separate (via StartIDE).
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (IDE startup is separate)")
 	}
 
-	// Should have emitted ide_started and ide_ready events in the IDE event stream
-	hasStarted, hasReady := false, false
-	for _, ev := range inst.IDE.Events {
-		if ev.Event == string(IDEEventStarted) {
-			hasStarted = true
-			// Verify scope is stamped correctly
-			if ev.Scope.Kind != ScopeKindIDE || ev.Scope.Name != "myrepo" {
-				t.Errorf("expected scope ide:myrepo, got %s", ev.Scope)
-			}
-		}
-		if ev.Event == string(IDEEventReady) {
-			hasReady = true
-		}
-	}
-	if !hasStarted {
-		t.Error("expected ide_started event")
-	}
-	if !hasReady {
-		t.Error("expected ide_ready event")
-	}
-
-	// IDE Name should be set to workspace name
-	if inst.IDE.Name != "myrepo" {
-		t.Errorf("expected IDE.Name %q, got %q", "myrepo", inst.IDE.Name)
-	}
-
-	// Workspace status should still be Ready (IDE events are in separate stream)
+	// Workspace status should still be Ready
 	if inst.Status != StatusReady {
 		t.Errorf("expected status ready, got %s", inst.Status)
 	}
@@ -583,127 +560,62 @@ func TestProvision_WithIDE_FailureNonFatal(t *testing.T) {
 	pa := NewPortAllocator(portFile)
 
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: dir,
+	}
+	projectRoot := params.ProjectRoot()
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		IDE:          &IDESpecConfig{Adapter: "openvscode-server"},
-	}
-
 	p := &Provisioner{
-		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
-		t.Fatalf("provision should succeed even when IDE fails: %v", err)
+		t.Fatalf("provision should succeed: %v", err)
 	}
 
-	// IDE instance should exist with failed status
-	if inst.IDE == nil {
-		t.Fatal("expected IDE instance to be set even on failure")
-	}
-	if inst.IDE.Status != StatusFailed {
-		t.Errorf("expected IDE status failed, got %s", inst.IDE.Status)
-	}
-
-	// Should have ide_failed event in the IDE event stream
-	hasFailed := false
-	for _, ev := range inst.IDE.Events {
-		if ev.Event == string(IDEEventFailed) {
-			hasFailed = true
-		}
-	}
-	if !hasFailed {
-		t.Error("expected ide_failed event")
+	// IDE startup is deferred to the ide-worktree-scoping story.
+	// Provision should NOT start IDE even when adapter would fail.
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (IDE startup is separate)")
 	}
 
 	// Workspace status should still be Ready
 	if inst.Status != StatusReady {
-		t.Errorf("expected status ready despite IDE failure, got %s", inst.Status)
+		t.Errorf("expected status ready, got %s", inst.Status)
 	}
 }
 
 func TestProvision_WithoutIDE_SkipsIDEPhase(t *testing.T) {
 	dir := t.TempDir()
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
-	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
-
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		// IDE is nil — no IDE requested
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: dir,
 	}
+	projectRoot := params.ProjectRoot()
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
 	p := &Provisioner{}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
 
-	if inst.IDE != nil {
+	if inst.IDE != nil && len(inst.IDE) > 0 {
 		t.Error("expected no IDE instance when IDE not requested")
-	}
-}
-
-func TestProvision_InvalidAdapterName(t *testing.T) {
-	dir := t.TempDir()
-	store := newMemStore()
-
-	adapter := &CodeServerAdapter{
-		EnvDir:        filepath.Join(dir, "env"),
-		SystemdRunner: newMockSystemdRunner(),
-		HTTPChecker:   &mockHTTPChecker{},
-		PollTimeout:   1 * time.Second,
-		PollInterval:  10 * time.Millisecond,
-	}
-
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  filepath.Join(dir, "repo", "default"),
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		IDE:          &IDESpecConfig{Adapter: "unknown-adapter"},
-	}
-
-	p := &Provisioner{
-		
-		IDEAdapter:    adapter,
-		PortAllocator: NewPortAllocator(filepath.Join(dir, "ports.json")),
-	}
-
-	_, err := p.Provision(store, spec)
-	if err == nil {
-		t.Fatal("expected error for unknown adapter")
-	}
-	pe, ok := err.(*ProvisionError)
-	if !ok {
-		t.Fatalf("expected ProvisionError, got %T", err)
-	}
-	if pe.Code != ErrSpecInvalid {
-		t.Errorf("expected SPEC_INVALID, got %s", pe.Code)
 	}
 }
 
@@ -719,13 +631,20 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "ws1",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Status:  StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "ws1",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Status:  StatusReady,
+			},
 		},
 	}
 
@@ -736,8 +655,8 @@ func TestSync_IDEHealthCheck(t *testing.T) {
 	}
 
 	// IDE should still be ready
-	if store.instances["ws1"].IDE.Status != StatusReady {
-		t.Errorf("expected IDE to remain ready after healthy check, got %s", store.instances["ws1"].IDE.Status)
+	if store.instances["ws1"].IDE["default"].Status != StatusReady {
+		t.Errorf("expected IDE to remain ready after healthy check, got %s", store.instances["ws1"].IDE["default"].Status)
 	}
 }
 
@@ -753,13 +672,20 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "ws1",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Status:  StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "ws1",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Status:  StatusReady,
+			},
 		},
 	}
 
@@ -770,12 +696,12 @@ func TestSync_IDEBecameInactive(t *testing.T) {
 	}
 
 	// IDE should now be pending (stopped)
-	if store.instances["ws1"].IDE.Status != StatusPending {
-		t.Errorf("expected IDE status pending after stop, got %s", store.instances["ws1"].IDE.Status)
+	if store.instances["ws1"].IDE["default"].Status != StatusPending {
+		t.Errorf("expected IDE status pending after stop, got %s", store.instances["ws1"].IDE["default"].Status)
 	}
 
 	// Should have emitted ide_stopped event in the IDE event stream
-	ideEvents := store.instances["ws1"].IDE.Events
+	ideEvents := store.instances["ws1"].IDE["default"].Events
 	if len(ideEvents) == 0 {
 		t.Fatal("expected IDE events")
 	}
@@ -805,37 +731,34 @@ func TestDeprovision_StopsIDE(t *testing.T) {
 	pa.Allocate(key)
 
 	store := newMemStore()
-	store.instances["myrepo/feature"] = &Workspace{
-		Spec: WorkspaceSpec{
-			Name:         "myrepo/feature",
-			IsDefault:    false,
-			WorktreeName: "feature",
-			ProjectRoot:  filepath.Join(dir, "repo", ".worktrees", "feature"),
-			RepoRoot:     filepath.Join(dir, "repo"),
-			BareRoot:     filepath.Join(dir, "repo", ".bare"),
-			Owner:        "user",
+	store.instances["myrepo"] = &Workspace{
+		Name:     "myrepo",
+		Owner:    "user",
+		Status:   StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: filepath.Join(dir, "repo", "default"), IsDefault: true},
+			{Name: "feature", ProjectRoot: filepath.Join(dir, "repo", ".worktrees", "feature"), IsDefault: false},
 		},
-		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "myrepo/feature",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Status:  StatusReady,
+		IDE: map[string]*IDEInstance{
+			"feature": {
+				Name:    "myrepo",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Status:  StatusReady,
+			},
 		},
 	}
 
 	p := &Provisioner{
-		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
 
-	// Create fake worktree dir so deprovision proceeds (will fail at git remove, which is expected for unit test)
+	// Create fake worktree dir so deprovision proceeds
 	os.MkdirAll(filepath.Join(dir, "repo", ".worktrees", "feature", ".git"), 0755)
+	os.MkdirAll(filepath.Join(dir, "repo", "default", ".git"), 0755)
 
-	// The deprovision will fail at git worktree remove (no real git repo), but
-	// IDE stop should have been called before that
-	p.Deprovision(store, "myrepo/feature", true)
+	p.Deprovision(store, "myrepo", true)
 
 	// Verify IDE was stopped
 	if len(runner.stopped) != 1 {
@@ -867,46 +790,48 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 
 	ideScope := EventScope{Kind: ScopeKindIDE, Name: "myrepo"}
 	inst := &Workspace{
-		Spec: WorkspaceSpec{
-			Name:         "myrepo",
-			WorktreeName: "default",
-			ProjectRoot:  filepath.Join(dir, "repo", "default"),
-			Owner:        "user",
+		Name:     "myrepo",
+		Owner:    "user",
+		Status:   StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: filepath.Join(dir, "repo", "default"), IsDefault: true},
 		},
-		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "myrepo",
-			Adapter: "openvscode-server",
-			Port:    9100,
-			Events: []EventRecord{
-				{Scope: ideScope, Event: string(IDEEventStarted), Timestamp: time.Now()},
-				{Scope: ideScope, Event: string(IDEEventReady), Timestamp: time.Now()},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "myrepo",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Events: []EventRecord{
+					{Scope: ideScope, Event: string(IDEEventStarted), Timestamp: time.Now()},
+					{Scope: ideScope, Event: string(IDEEventReady), Timestamp: time.Now()},
+				},
+				Status: StatusReady,
 			},
-			Status: StatusReady,
 		},
 	}
 
 	p := &Provisioner{
-		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
 
-	p.stopIDE(inst, inst.Spec)
+	p.stopIDEForWorktree(inst, "default", filepath.Join(dir, "repo", "default"))
 
 	// IDE instance must be preserved (not nil)
-	if inst.IDE == nil {
+	if inst.IDE == nil || inst.IDE["default"] == nil {
 		t.Fatal("expected IDE instance to be preserved after stop, got nil")
 	}
 
+	ide := inst.IDE["default"]
+
 	// Status must be pending after stop
-	if inst.IDE.Status != StatusPending {
-		t.Errorf("expected IDE status %q after stop, got %q", StatusPending, inst.IDE.Status)
+	if ide.Status != StatusPending {
+		t.Errorf("expected IDE status %q after stop, got %q", StatusPending, ide.Status)
 	}
 
 	// Must have ide_stopped event in the trail
 	hasStopped := false
-	for _, ev := range inst.IDE.Events {
+	for _, ev := range ide.Events {
 		if ev.Event == string(IDEEventStopped) {
 			hasStopped = true
 		}
@@ -916,8 +841,8 @@ func TestStopIDE_PreservesInstance(t *testing.T) {
 	}
 
 	// Event trail should have 3 events: started, ready, stopped
-	if len(inst.IDE.Events) != 3 {
-		t.Errorf("expected 3 IDE events, got %d", len(inst.IDE.Events))
+	if len(ide.Events) != 3 {
+		t.Errorf("expected 3 IDE events, got %d", len(ide.Events))
 	}
 }
 
@@ -937,28 +862,23 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 	pa := NewPortAllocator(portFile)
 
 	store := newMemStore()
-	projectRoot := filepath.Join(dir, "repo", "default")
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: "fake"},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: dir,
+	}
+	projectRoot := params.ProjectRoot()
 	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
 
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", CloneURL: "fake", Branch: "main"},
-		ProjectRoot:  projectRoot,
-		RepoRoot:     filepath.Join(dir, "repo"),
-		BareRoot:     filepath.Join(dir, "repo", ".bare"),
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        currentUser(),
-		IDE:          &IDESpecConfig{Adapter: "openvscode-server"},
-	}
-
 	p := &Provisioner{
-		
 		IDEAdapter:    adapter,
 		PortAllocator: pa,
 	}
 
-	inst, err := p.Provision(store, spec)
+	inst, err := p.Provision(store, params)
 	if err != nil {
 		t.Fatalf("provision failed: %v", err)
 	}
@@ -971,81 +891,412 @@ func TestWorkspaceEventsDoNotContainIDEEvents(t *testing.T) {
 		}
 	}
 
-	// IDE event stream must contain ide_started and ide_ready
-	if inst.IDE == nil {
-		t.Fatal("expected IDE instance to be set")
-	}
-	hasStarted2, hasReady2 := false, false
-	for _, ev := range inst.IDE.Events {
-		if ev.Event == string(IDEEventStarted) {
-			hasStarted2 = true
-		}
-		if ev.Event == string(IDEEventReady) {
-			hasReady2 = true
-		}
-	}
-	if !hasStarted2 {
-		t.Error("expected ide_started event in IDE event stream")
-	}
-	if !hasReady2 {
-		t.Error("expected ide_ready event in IDE event stream")
+	// IDE startup is deferred — no IDE instances should exist on provision
+	if inst.IDE != nil && len(inst.IDE) > 0 {
+		t.Fatal("expected no IDE instances during provision (IDE startup is separate)")
 	}
 }
 
+// --- StartIDE / StopIDE public API tests ---
 
-func TestIDESpecConfig_JSONRoundTrip(t *testing.T) {
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", Branch: "main"},
-		ProjectRoot:  "/tmp/repo/default",
-		RepoRoot:     "/tmp/repo",
-		BareRoot:     "/tmp/repo/.bare",
-		WorktreeName: "default",
-		IsDefault:    true,
-		Owner:        "user",
-		IDE:          &IDESpecConfig{Adapter: "openvscode-server"},
+func TestStartIDE_StartsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	checker := &mockHTTPChecker{healthy: true}
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   checker,
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
-	data, err := json.Marshal(spec)
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	result, err := p.StartIDE(store, "myrepo", "default")
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("StartIDE: %v", err)
 	}
 
-	if !strings.Contains(string(data), `"adapter":"openvscode-server"`) {
-		t.Error("expected IDE adapter in JSON")
+	if result.WorkspaceName != "myrepo" {
+		t.Errorf("expected workspace 'myrepo', got %q", result.WorkspaceName)
+	}
+	if result.WorktreeName != "default" {
+		t.Errorf("expected worktree 'default', got %q", result.WorktreeName)
+	}
+	if result.Adapter != "openvscode-server" {
+		t.Errorf("expected adapter 'openvscode-server', got %q", result.Adapter)
+	}
+	if result.Port < 9100 || result.Port > 9199 {
+		t.Errorf("expected port in range 9100-9199, got %d", result.Port)
+	}
+	if result.Status != string(StatusReady) {
+		t.Errorf("expected status 'ready', got %q", result.Status)
 	}
 
-	var got WorkspaceSpec
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	// Verify IDE was persisted in state
+	ws := store.instances["myrepo"]
+	ide := ws.IDEForWorktree("default")
+	if ide == nil {
+		t.Fatal("expected IDE instance persisted in state")
 	}
-
-	if got.IDE == nil {
-		t.Fatal("expected IDE to be set after round-trip")
-	}
-	if got.IDE.Adapter != "openvscode-server" {
-		t.Errorf("expected adapter 'openvscode-server', got %q", got.IDE.Adapter)
+	if ide.Port != result.Port {
+		t.Errorf("persisted port %d != result port %d", ide.Port, result.Port)
 	}
 }
 
-func TestIDESpecConfig_OmittedWhenNil(t *testing.T) {
-	spec := WorkspaceSpec{
-		Name:         "myrepo",
-		VCS:          VCSTarget{Host: "github.com", Branch: "main"},
-		ProjectRoot:  "/tmp/repo/default",
-		RepoRoot:     "/tmp/repo",
-		BareRoot:     "/tmp/repo/.bare",
-		WorktreeName: "default",
-		Owner:        "user",
+func TestStartIDE_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	checker := &mockHTTPChecker{healthy: true}
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   checker,
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "myrepo",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Status:  StatusReady,
+			},
+		},
 	}
 
-	data, err := json.Marshal(spec)
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	result, err := p.StartIDE(store, "myrepo", "default")
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("StartIDE: %v", err)
 	}
 
-	if strings.Contains(string(data), `"ide"`) {
-		t.Error("expected ide to be omitted from JSON when nil")
+	// Should return existing state without restarting
+	if result.Port != 9100 {
+		t.Errorf("expected existing port 9100, got %d", result.Port)
+	}
+	if result.Status != string(StatusReady) {
+		t.Errorf("expected status 'ready', got %q", result.Status)
+	}
+	// Systemd should NOT have been called (idempotent path)
+	if len(runner.started) != 0 {
+		t.Errorf("expected no systemd starts on idempotent call, got %d", len(runner.started))
+	}
+}
+
+func TestStartIDE_DefaultWorktreeWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	checker := &mockHTTPChecker{healthy: true}
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   checker,
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	os.MkdirAll(filepath.Join(projectRoot, ".git"), 0755)
+
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+	}
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	// Empty worktree name should default to "default"
+	result, err := p.StartIDE(store, "myrepo", "")
+	if err != nil {
+		t.Fatalf("StartIDE: %v", err)
+	}
+	if result.WorktreeName != "default" {
+		t.Errorf("expected worktree 'default', got %q", result.WorktreeName)
+	}
+}
+
+func TestStartIDE_WorkspaceNotFound(t *testing.T) {
+	dir := t.TempDir()
+	portFile := filepath.Join(dir, "ports.json")
+	adapter := &CodeServerAdapter{}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	_, err := p.StartIDE(store, "nonexistent", "default")
+	if err == nil {
+		t.Fatal("expected error for nonexistent workspace")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != ErrNotFound {
+		t.Errorf("expected NOT_FOUND, got %q", pe.Code)
+	}
+}
+
+func TestStartIDE_WorktreeNotFound(t *testing.T) {
+	dir := t.TempDir()
+	portFile := filepath.Join(dir, "ports.json")
+	adapter := &CodeServerAdapter{}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: "/tmp/default", IsDefault: true},
+		},
+	}
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	_, err := p.StartIDE(store, "myrepo", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent worktree")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != ErrNotFound {
+		t.Errorf("expected NOT_FOUND, got %q", pe.Code)
+	}
+}
+
+func TestStartIDE_NotConfigured(t *testing.T) {
+	store := newMemStore()
+	p := &Provisioner{} // no adapter or allocator
+
+	_, err := p.StartIDE(store, "myrepo", "default")
+	if err == nil {
+		t.Fatal("expected error when IDE not configured")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != "IDE_NOT_CONFIGURED" {
+		t.Errorf("expected IDE_NOT_CONFIGURED, got %q", pe.Code)
+	}
+}
+
+func TestStopIDE_StopsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   &mockHTTPChecker{},
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	// Pre-allocate a port
+	key := PortKey("user", "default")
+	pa.Allocate(key)
+
+	store := newMemStore()
+	projectRoot := filepath.Join(dir, "repo", "default")
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "myrepo",
+				Adapter: "openvscode-server",
+				Port:    9100,
+				Status:  StatusReady,
+			},
+		},
+	}
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	result, err := p.StopIDE(store, "myrepo", "default")
+	if err != nil {
+		t.Fatalf("StopIDE: %v", err)
+	}
+
+	if result.WorkspaceName != "myrepo" {
+		t.Errorf("expected workspace 'myrepo', got %q", result.WorkspaceName)
+	}
+	if result.WorktreeName != "default" {
+		t.Errorf("expected worktree 'default', got %q", result.WorktreeName)
+	}
+
+	// Verify systemd unit was stopped
+	if len(runner.stopped) != 1 {
+		t.Errorf("expected 1 unit stopped, got %d", len(runner.stopped))
+	}
+
+	// Verify port was released
+	_, found := pa.Lookup(key)
+	if found {
+		t.Error("expected port to be released after StopIDE")
+	}
+}
+
+func TestStopIDE_NoIDEInstance(t *testing.T) {
+	dir := t.TempDir()
+	portFile := filepath.Join(dir, "ports.json")
+	adapter := &CodeServerAdapter{}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: "/tmp/default", IsDefault: true},
+		},
+	}
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	_, err := p.StopIDE(store, "myrepo", "default")
+	if err == nil {
+		t.Fatal("expected error when no IDE instance exists")
+	}
+	pe, ok := err.(*ProvisionError)
+	if !ok {
+		t.Fatalf("expected ProvisionError, got %T", err)
+	}
+	if pe.Code != ErrNotFound {
+		t.Errorf("expected NOT_FOUND, got %q", pe.Code)
+	}
+}
+
+func TestStartIDE_BranchWorktree(t *testing.T) {
+	dir := t.TempDir()
+	runner := newMockSystemdRunner()
+	checker := &mockHTTPChecker{healthy: true}
+	portFile := filepath.Join(dir, "ports.json")
+
+	adapter := &CodeServerAdapter{
+		EnvDir:        filepath.Join(dir, "env"),
+		SystemdRunner: runner,
+		HTTPChecker:   checker,
+		PollTimeout:   1 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+	}
+	pa := NewPortAllocator(portFile)
+
+	store := newMemStore()
+	defaultRoot := filepath.Join(dir, "repo", "default")
+	featureRoot := filepath.Join(dir, "repo", ".worktrees", "feat-bar")
+	os.MkdirAll(filepath.Join(defaultRoot, ".git"), 0755)
+	os.MkdirAll(filepath.Join(featureRoot, ".git"), 0755)
+
+	store.instances["myrepo"] = &Workspace{
+		Name:  "myrepo",
+		Owner: "user",
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: defaultRoot, IsDefault: true},
+			{Name: "feat/bar", ProjectRoot: featureRoot, IsDefault: false, Branch: "feat/bar"},
+		},
+	}
+
+	p := &Provisioner{
+		IDEAdapter:    adapter,
+		PortAllocator: pa,
+	}
+
+	result, err := p.StartIDE(store, "myrepo", "feat/bar")
+	if err != nil {
+		t.Fatalf("StartIDE: %v", err)
+	}
+
+	if result.WorktreeName != "feat/bar" {
+		t.Errorf("expected worktree 'feat/bar', got %q", result.WorktreeName)
+	}
+	if result.Status != string(StatusReady) {
+		t.Errorf("expected status 'ready', got %q", result.Status)
+	}
+
+	// Verify the IDE was stored under the correct worktree key
+	ws := store.instances["myrepo"]
+	if ws.IDE == nil || ws.IDE["feat/bar"] == nil {
+		t.Fatal("expected IDE instance stored under 'feat/bar' key")
+	}
+
+	// Verify the systemd unit name uses the sanitized worktree name
+	if len(runner.started) != 1 {
+		t.Fatalf("expected 1 unit started, got %d", len(runner.started))
+	}
+	expectedUnit := "openvscode-server@user--feat--bar.service"
+	if runner.started[0] != expectedUnit {
+		t.Errorf("expected unit %q, got %q", expectedUnit, runner.started[0])
 	}
 }
 

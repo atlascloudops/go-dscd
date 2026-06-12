@@ -25,8 +25,13 @@ func TestSync_PendingWithClone(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusPending,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	actLog := NewActivityLog(filepath.Join(dir, "activity.log"))
@@ -57,8 +62,13 @@ func TestSync_ReadyWithoutClone(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	actLog := NewActivityLog(filepath.Join(dir, "activity.log"))
@@ -85,8 +95,13 @@ func TestSync_Idempotent(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -109,8 +124,13 @@ func TestSync_SetsTimestamp(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	before := time.Now().UTC()
@@ -134,8 +154,13 @@ func TestSync_PendingWithWorktreeGitFile(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusPending,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -160,8 +185,13 @@ func TestSync_ReadyWorktreeRemovedFromDisk(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -190,8 +220,13 @@ func TestSync_CloneDetectedEvent(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusFailed,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -216,8 +251,13 @@ func TestSync_EventRecordHasCorrectScope(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusPending,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -242,8 +282,13 @@ func TestSync_ProvisionFailedEventHasCorrectScope(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)
@@ -269,8 +314,13 @@ func TestSync_ActivityLogReceivesWorkspaceEvents(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusPending,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	actLog := NewActivityLog(filepath.Join(dir, "activity.log"))
@@ -299,13 +349,20 @@ func TestSync_ActivityLogReceivesIDEEvents(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", WorktreeName: "default", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusReady,
-		IDE: &IDEInstance{
-			Name:    "ws1",
-			Adapter: "openvscode-server",
-			Port:    18080,
-			Status:  StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
+		IDE: map[string]*IDEInstance{
+			"default": {
+				Name:    "ws1",
+				Adapter: "openvscode-server",
+				Port:    18080,
+				Status:  StatusReady,
+			},
 		},
 	}
 
@@ -334,8 +391,13 @@ func TestSync_NilActivityLogDoesNotPanic(t *testing.T) {
 
 	store := newMemStore()
 	store.instances["ws1"] = &Workspace{
-		Spec:   WorkspaceSpec{Name: "ws1", ProjectRoot: projectRoot, Owner: "user", VCS: VCSTarget{Host: "github.com"}},
+		Name:   "ws1",
+		Owner:  "user",
+		Repo:   RepoInfo{Host: "github.com"},
 		Status: StatusPending,
+		Worktrees: []Worktree{
+			{Name: "default", ProjectRoot: projectRoot, IsDefault: true},
+		},
 	}
 
 	s := NewSyncer(store, nil)

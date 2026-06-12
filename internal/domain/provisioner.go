@@ -35,194 +35,222 @@ func (p *Provisioner) recordIDEEvent(ide *IDEInstance, event IDEEvent, detail st
 	}
 }
 
-// Provision creates a workspace using dual-mode provisioning:
-//   - If IsDefault and no bare clone exists: bare clone + default worktree
-//   - If bare clone exists (or is created): add worktree from existing bare
-func (p *Provisioner) Provision(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
+// Provision creates a workspace using the new aggregate model.
+// It always provisions a bare clone + default worktree on HEAD. Non-default
+// worktrees are created lazily via AddWorktree. IDE startup is not part of
+// provision — it is triggered separately via StartIDE (or the CLI's attach flow).
+func (p *Provisioner) Provision(store StateStore, params ProvisionParams) (*Workspace, error) {
+	spec := params.Spec
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}
-	if err := p.resolveIDEAdapter(spec); err != nil {
-		return nil, err
+
+	// Idempotency check — if default worktree already exists, return ready
+	projectRoot := params.ProjectRoot()
+	if worktreeExists(projectRoot) {
+		return p.returnIdempotent(store, params)
 	}
 
-	// Idempotency check — if worktree already exists, return ready
-	if worktreeExists(spec.ProjectRoot) {
-		return p.returnIdempotent(store, spec)
-	}
-
-	// Template provisioning path: reinit git history from template repo
+	// Template provisioning path
 	if spec.Template != nil {
-		return p.provisionTemplate(store, spec)
+		return p.provisionTemplate(store, params)
 	}
 
-	bareExists := dirExists(spec.BareRoot)
+	return p.provisionBareCloneAndDefault(store, params)
+}
 
-	if spec.IsDefault && !bareExists {
-		return p.provisionBareCloneAndDefault(store, spec)
+// newWorkspaceFromParams creates a new Workspace aggregate from provision params.
+func newWorkspaceFromParams(params ProvisionParams, now *time.Time) *Workspace {
+	spec := params.Spec
+	return &Workspace{
+		Name:          spec.Name,
+		Repo:          RepoInfo{Host: spec.VCS.Host, Slug: spec.VCS.Repo, CloneURL: spec.VCS.CloneURL},
+		RepoRoot:      params.RepoRoot(),
+		BareRoot:      params.BareRoot(),
+		Owner:         spec.Owner,
+		PatName:       spec.PatName,
+		Template:      spec.Template,
+		ProvisionedAt: now,
 	}
+}
 
-	return p.provisionWorktree(store, spec, !bareExists)
+// updateFromParams updates mutable aggregate fields from params (idempotent path).
+func (ws *Workspace) updateFromParams(params ProvisionParams) {
+	spec := params.Spec
+	ws.Repo = RepoInfo{Host: spec.VCS.Host, Slug: spec.VCS.Repo, CloneURL: spec.VCS.CloneURL}
+	ws.Owner = spec.Owner
+	ws.PatName = spec.PatName
+	ws.Template = spec.Template
+	ws.RepoRoot = params.RepoRoot()
+	ws.BareRoot = params.BareRoot()
 }
 
 // returnIdempotent handles the case where the worktree already exists.
-func (p *Provisioner) returnIdempotent(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
+func (p *Provisioner) returnIdempotent(store StateStore, params ProvisionParams) (*Workspace, error) {
 	now := time.Now().UTC()
 
-	// Load existing instance to preserve event history
-	var inst *Workspace
+	var ws *Workspace
 	if err := store.WithLock(func() error {
 		instances, err := store.Load()
 		if err != nil {
 			return err
 		}
-		if existing, ok := instances[spec.Name]; ok {
-			inst = existing
-			inst.Spec = spec
+		if existing, ok := instances[params.Spec.Name]; ok {
+			ws = existing
+			ws.updateFromParams(params)
 		} else {
-			inst = &Workspace{
-				Spec:          spec,
-						ProvisionedAt:  &now,
-			}
-			p.recordWorkspaceEvent(inst, EventWorktreeCreated, "detected by provision (idempotent)")
+			ws = newWorkspaceFromParams(params, &now)
+			p.recordWorkspaceEvent(ws, EventWorktreeCreated, "detected by provision (idempotent)")
 		}
-		// Hydrate before resolving head commit so it reflects the latest state
-		if dirExists(spec.BareRoot) {
-			p.hydrate(inst, spec)
+		// Hydrate before resolving head commit
+		if dirExists(params.BareRoot()) {
+			p.hydrateWorktrees(ws)
 		}
-		inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
+		// Update default worktree head commit
+		if wt := ws.DefaultWorktree(); wt != nil {
+			wt.HeadCommit = ResolveHeadCommit(wt.ProjectRoot, ws.Owner)
+		}
+		// Ensure default worktree is registered
+		if ws.DefaultWorktree() == nil && params.ProjectRoot() != "" {
+			ws.Worktrees = append(ws.Worktrees, Worktree{
+				Name:        "default",
+				ProjectRoot: params.ProjectRoot(),
+				IsDefault:   true,
+				HeadCommit:  ResolveHeadCommit(params.ProjectRoot(), ws.Owner),
+			})
+		}
 
-		// IDE: if requested but not running, start; if running, health-check
-		if spec.IDE != nil && p.IDEAdapter != nil {
-			if inst.IDE == nil || inst.IDE.Status != StatusReady {
-				p.startIDE(inst, spec)
-			} else {
-				p.healthCheckIDE(inst)
-			}
-		}
+		// IDE startup is separate — triggered via StartIDE or CLI attach flow
 
-		instances[spec.Name] = inst
+		instances[params.Spec.Name] = ws
 		return store.Save(instances)
 	}); err != nil {
 		return nil, err
 	}
-	return inst, nil
+	return ws, nil
 }
 
-// provisionBareCloneAndDefault creates a bare clone and the default worktree.
-func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
+// provisionBareCloneAndDefault creates a bare clone (if absent) and the default
+// worktree on HEAD. This is the sole provision path — non-default worktrees are
+// created lazily via AddWorktree.
+func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params ProvisionParams) (*Workspace, error) {
 	now := time.Now().UTC()
+	spec := params.Spec
 
-	inst := &Workspace{
-		Spec:           spec,
-		ProvisionedAt:  &now,
-	}
-	p.recordWorkspaceEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
+	ws := newWorkspaceFromParams(params, &now)
 
 	// 1. mkdir -p <repo_root>
-	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
+	if err := os.MkdirAll(params.RepoRoot(), 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
 	}
 
-	// 2. git clone --bare <clone_url> <bare_root>
-	if err := p.bareClone(spec); err != nil {
-		errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
-		return inst, &ProvisionError{
-			Code:    ErrCloneFailed,
-			Message: "git clone --bare failed",
-			Detail:  err.Error(),
-		}
-	}
-	p.recordWorkspaceEvent(inst, EventCloneCompleted, "")
+	// 2. Clone bare repo if it doesn't already exist
+	if !dirExists(params.BareRoot()) {
+		p.recordWorkspaceEvent(ws, EventCloneStarted, spec.VCS.CloneURL)
 
-	// 3. Resolve default branch
-	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
+		if err := p.bareClone(spec.VCS.CloneURL, params.BareRoot(), spec.Owner); err != nil {
+			errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
+			p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+			ws.LastError = &errMsg
+			p.persistState(store, spec.Name, ws)
+			return ws, &ProvisionError{
+				Code:    ErrCloneFailed,
+				Message: "git clone --bare failed",
+				Detail:  err.Error(),
+			}
+		}
+		p.recordWorkspaceEvent(ws, EventCloneCompleted, "")
+	}
+
+	// 3. Resolve default branch from bare clone HEAD
+	defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 	if err != nil {
 		slog.Warn("could not resolve default branch, falling back to main", "workspace", spec.Name, "error", err)
 		defaultBranch = "main"
 	}
 
-	// 4. git -C <bare_root> worktree add ../default <default_branch>
-	p.recordWorkspaceEvent(inst, EventWorktreeCreating, defaultBranch)
-	worktreePath := filepath.Join(spec.RepoRoot, "default")
-	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
+	// 4. Create default worktree: git -C <bare_root> worktree add <path> <branch>
+	worktreePath := params.ProjectRoot()
+	p.recordWorkspaceEvent(ws, EventWorktreeCreating, defaultBranch)
+	if err := p.addWorktree(params.BareRoot(), worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
-		return inst, &ProvisionError{
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git worktree add (default) failed",
 			Detail:  err.Error(),
 		}
 	}
-	p.recordWorkspaceEvent(inst, EventWorktreeCreated, defaultBranch)
+	p.recordWorkspaceEvent(ws, EventWorktreeCreated, defaultBranch)
 
-	p.hydrate(inst, spec)
-	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
-	p.startIDE(inst, spec)
+	// 5. Initialize submodules (best-effort, before hydrate)
+	p.initSubmodules(ws, worktreePath)
 
-	if err := p.persistState(store, spec.Name, inst); err != nil {
+	// 6. Populate the default worktree on the aggregate
+	ws.Worktrees = []Worktree{
+		{
+			Name:        "default",
+			Branch:      defaultBranch,
+			ProjectRoot: worktreePath,
+			IsDefault:   true,
+			HeadCommit:  ResolveHeadCommit(worktreePath, spec.Owner),
+		},
+	}
+
+	// 7. Hydrate (fetch + fast-forward pull on default worktree)
+	p.hydrateWorktrees(ws)
+
+	// IDE startup is deferred to the ide-worktree-scoping story
+
+	if err := p.persistState(store, spec.Name, ws); err != nil {
 		return nil, err
 	}
 
-	return inst, nil
+	return ws, nil
 }
 
 // provisionTemplate creates a workspace from a template repository.
-// It clones the template, strips .git, reinitialises as a bare+worktree,
-// copies template files, configures remotes, and makes an initial commit.
-//
-// Strategy (compatible with git < 2.42 which lacks --orphan):
-//  1. Clone template into temp dir, strip .git
-//  2. git init a scratch repo, copy template files, commit
-//  3. git clone --bare scratch into .bare/
-//  4. Remove scratch, add worktree from bare
-//  5. Configure remotes on the bare repo
-func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*Workspace, error) {
+func (p *Provisioner) provisionTemplate(store StateStore, params ProvisionParams) (*Workspace, error) {
 	now := time.Now().UTC()
+	spec := params.Spec
 	tmpl := spec.Template
 
-	inst := &Workspace{
-		Spec:           spec,
-		ProvisionedAt:  &now,
-	}
+	ws := newWorkspaceFromParams(params, &now)
 
 	// 1. Clone template into a temporary directory
-	p.recordWorkspaceEvent(inst, EventTemplateCloneStarted, tmpl.CloneURL)
-	tmpDir := filepath.Join(spec.RepoRoot, ".template-tmp")
-	if err := os.MkdirAll(spec.RepoRoot, 0755); err != nil {
+	p.recordWorkspaceEvent(ws, EventTemplateCloneStarted, tmpl.CloneURL)
+	tmpDir := filepath.Join(params.RepoRoot(), ".template-tmp")
+	if err := os.MkdirAll(params.RepoRoot(), 0755); err != nil {
 		return nil, fmt.Errorf("create repo root: %w", err)
 	}
 
 	if err := p.cloneInto(tmpl.CloneURL, tmpDir, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("template clone failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
-		return inst, &ProvisionError{
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "template clone failed",
 			Detail:  err.Error(),
 		}
 	}
-	p.recordWorkspaceEvent(inst, EventTemplateCloneCompleted, "")
+	p.recordWorkspaceEvent(ws, EventTemplateCloneCompleted, "")
 
 	// 2. Strip .git from the cloned content
 	os.RemoveAll(filepath.Join(tmpDir, ".git"))
 
 	// 3. Init a scratch repo, copy template files in, and commit
-	scratchDir := filepath.Join(spec.RepoRoot, ".template-scratch")
+	scratchDir := filepath.Join(params.RepoRoot(), ".template-scratch")
 	if err := p.gitInit(scratchDir, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git init (scratch) failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
 		os.RemoveAll(tmpDir)
-		return inst, &ProvisionError{
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git init failed",
 			Detail:  err.Error(),
@@ -231,12 +259,12 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 
 	if err := p.copyDir(tmpDir, scratchDir); err != nil {
 		errMsg := fmt.Sprintf("copy template files failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
 		os.RemoveAll(tmpDir)
 		os.RemoveAll(scratchDir)
-		return inst, &ProvisionError{
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "copy template files failed",
 			Detail:  err.Error(),
@@ -247,11 +275,11 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	commitMsg := fmt.Sprintf("Initial commit from template %s", tmpl.Repo)
 	if err := p.gitAddAndCommit(scratchDir, commitMsg, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("initial commit failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
 		os.RemoveAll(scratchDir)
-		return inst, &ProvisionError{
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "initial commit failed",
 			Detail:  err.Error(),
@@ -259,13 +287,13 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	}
 
 	// 4. Clone bare from scratch, then create worktree
-	if err := p.bareCloneLocal(scratchDir, spec.BareRoot, spec.Owner); err != nil {
+	if err := p.bareCloneLocal(scratchDir, params.BareRoot(), spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git clone --bare (from scratch) failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
 		os.RemoveAll(scratchDir)
-		return inst, &ProvisionError{
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git clone --bare failed",
 			Detail:  err.Error(),
@@ -274,55 +302,1144 @@ func (p *Provisioner) provisionTemplate(store StateStore, spec WorkspaceSpec) (*
 	os.RemoveAll(scratchDir)
 
 	// Remove the "origin" remote that clone --bare created (points to scratch)
-	p.gitRemoteRemove(spec.BareRoot, "origin", spec.Owner)
+	p.gitRemoteRemove(params.BareRoot(), "origin", spec.Owner)
 
-	defaultBranch, err := resolveDefaultBranch(spec.BareRoot, spec.Owner)
+	defaultBranch, err := resolveDefaultBranch(params.BareRoot(), spec.Owner)
 	if err != nil {
 		defaultBranch = "main"
 	}
 
-	worktreePath := filepath.Join(spec.RepoRoot, "default")
-	if err := p.addWorktree(spec.BareRoot, worktreePath, defaultBranch, spec.Owner); err != nil {
+	worktreePath := filepath.Join(params.RepoRoot(), "default")
+	if err := p.addWorktree(params.BareRoot(), worktreePath, defaultBranch, spec.Owner); err != nil {
 		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
-		return inst, &ProvisionError{
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, spec.Name, ws)
+		return ws, &ProvisionError{
 			Code:    ErrCloneFailed,
 			Message: "git worktree add (default) failed",
 			Detail:  err.Error(),
 		}
 	}
 
-	p.recordWorkspaceEvent(inst, EventTemplateReinitCompleted, tmpl.Repo)
-	p.recordWorkspaceEvent(inst, EventWorktreeCreated, defaultBranch)
+	p.recordWorkspaceEvent(ws, EventTemplateReinitCompleted, tmpl.Repo)
+	p.recordWorkspaceEvent(ws, EventWorktreeCreated, defaultBranch)
 
 	// 5. Configure remotes on the bare repo
-	p.gitRemoteAdd(spec.BareRoot, "template", tmpl.CloneURL, spec.Owner)
-	p.gitRemoteSetPushURL(spec.BareRoot, "template", "no_push", spec.Owner)
+	p.gitRemoteAdd(params.BareRoot(), "template", tmpl.CloneURL, spec.Owner)
+	p.gitRemoteSetPushURL(params.BareRoot(), "template", "no_push", spec.Owner)
 	if spec.VCS.CloneURL != "" {
-		p.gitRemoteAdd(spec.BareRoot, "origin", spec.VCS.CloneURL, spec.Owner)
+		p.gitRemoteAdd(params.BareRoot(), "origin", spec.VCS.CloneURL, spec.Owner)
 	}
 
-	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
-	p.startIDE(inst, spec)
+	// Populate worktrees
+	ws.Worktrees = []Worktree{
+		{
+			Name:        "default",
+			Branch:      defaultBranch,
+			ProjectRoot: worktreePath,
+			IsDefault:   true,
+			HeadCommit:  ResolveHeadCommit(worktreePath, spec.Owner),
+		},
+	}
 
-	if err := p.persistState(store, spec.Name, inst); err != nil {
+	// IDE startup is deferred to the ide-worktree-scoping story
+
+	if err := p.persistState(store, spec.Name, ws); err != nil {
 		return nil, err
 	}
 
-	return inst, nil
+	return ws, nil
 }
 
-// cloneInto runs git clone <url> <dest> as the spec owner.
-func (p *Provisioner) cloneInto(url, dest, owner string) error {
-	cloneCmd := fmt.Sprintf("git clone %s %s", url, dest)
+// WorktreeAddResult holds the outcome of an AddWorktree operation.
+type WorktreeAddResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	Branch        string `json:"branch"`
+	ProjectRoot   string `json:"project_root"`
+	Created       bool   `json:"created"` // false if worktree already existed (idempotent)
+}
+
+// AddWorktree lazily creates a worktree for a specific branch within an existing
+// workspace's bare clone. It fetches the branch from origin, creates the worktree
+// under <repo_root>/.worktrees/<branch>, appends a Worktree entry to the aggregate,
+// and returns the project root path. The operation is idempotent — if a worktree for
+// the branch already exists, the existing project root is returned without error.
+func (p *Provisioner) AddWorktree(store StateStore, workspaceName, branch string) (*WorktreeAddResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[workspaceName]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+		}
+	}
+
+	// Idempotency: if a worktree for this branch already exists, return it
+	if existing := ws.FindWorktreeByBranch(branch); existing != nil {
+		return &WorktreeAddResult{
+			WorkspaceName: workspaceName,
+			Branch:        branch,
+			ProjectRoot:   existing.ProjectRoot,
+			Created:       false,
+		}, nil
+	}
+
+	// Also check on disk — the worktree may exist but not be in state
+	projectRoot := DeriveProjectRoot(ws.RepoRoot, branch)
+	if worktreeExists(projectRoot) {
+		// Register it in state and return
+		wt := Worktree{
+			Name:        branch,
+			Branch:      branch,
+			ProjectRoot: projectRoot,
+			IsDefault:   false,
+			HeadCommit:  ResolveHeadCommit(projectRoot, ws.Owner),
+		}
+		ws.Worktrees = append(ws.Worktrees, wt)
+		if err := p.persistState(store, workspaceName, ws); err != nil {
+			return nil, err
+		}
+		return &WorktreeAddResult{
+			WorkspaceName: workspaceName,
+			Branch:        branch,
+			ProjectRoot:   projectRoot,
+			Created:       false,
+		}, nil
+	}
+
+	// Ensure .worktrees/ directory exists
+	worktreesDir := filepath.Join(ws.RepoRoot, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
+		return nil, fmt.Errorf("create .worktrees directory: %w", err)
+	}
+
+	// Fetch the branch from origin
+	p.recordWorkspaceEvent(ws, EventWorktreeCreating, branch)
+	p.fetchBranch(ws.BareRoot, branch, ws.Owner)
+
+	// Create the worktree
+	if err := p.addWorktree(ws.BareRoot, projectRoot, branch, ws.Owner); err != nil {
+		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
+		p.recordWorkspaceEvent(ws, EventProvisionFailed, errMsg)
+		ws.LastError = &errMsg
+		p.persistState(store, workspaceName, ws)
+		return nil, &ProvisionError{
+			Code:    ErrCloneFailed,
+			Message: "git worktree add failed",
+			Detail:  err.Error(),
+		}
+	}
+
+	// Initialize submodules in the new worktree (best-effort)
+	p.initSubmodules(ws, projectRoot)
+
+	// Append worktree entry to the aggregate
+	wt := Worktree{
+		Name:        branch,
+		Branch:      branch,
+		ProjectRoot: projectRoot,
+		IsDefault:   false,
+		HeadCommit:  ResolveHeadCommit(projectRoot, ws.Owner),
+	}
+	ws.Worktrees = append(ws.Worktrees, wt)
+	p.recordWorkspaceEvent(ws, EventWorktreeCreated, branch)
+
+	if err := p.persistState(store, workspaceName, ws); err != nil {
+		return nil, err
+	}
+
+	slog.Info("worktree added", "workspace", workspaceName, "branch", branch, "project_root", projectRoot)
+
+	return &WorktreeAddResult{
+		WorkspaceName: workspaceName,
+		Branch:        branch,
+		ProjectRoot:   projectRoot,
+		Created:       true,
+	}, nil
+}
+
+// startIDEForWorktree allocates a port, starts the IDE adapter, and updates instance state.
+func (p *Provisioner) startIDEForWorktree(ws *Workspace, worktreeName, worktreePath string) {
+	if p.IDEAdapter == nil || p.PortAllocator == nil {
+		return
+	}
+
+	key := PortKey(ws.Owner, worktreeName)
+	port, err := p.PortAllocator.Allocate(key)
+	if err != nil {
+		ide := ws.IDEForWorktree(worktreeName)
+		if ide == nil {
+			ide = &IDEInstance{Name: ws.Name, Adapter: p.IDEAdapter.Name(), Port: 0}
+			ws.SetIDEForWorktree(worktreeName, ide)
+		}
+		p.recordIDEEvent(ide, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
+		return
+	}
+
+	ide := &IDEInstance{
+		Name:    ws.Name,
+		Adapter: p.IDEAdapter.Name(),
+		Port:    port,
+	}
+	ws.SetIDEForWorktree(worktreeName, ide)
+
+	ctx := IDEContext{
+		Owner:        ws.Owner,
+		WorktreePath: worktreePath,
+		WorktreeName: worktreeName,
+		Port:         port,
+	}
+
+	p.recordIDEEvent(ide, IDEEventStarted, fmt.Sprintf("port=%d", port))
+	if err := p.IDEAdapter.Start(ctx); err != nil {
+		p.recordIDEEvent(ide, IDEEventFailed, err.Error())
+		return
+	}
+
+	p.recordIDEEvent(ide, IDEEventReady, fmt.Sprintf("port=%d", port))
+}
+
+// stopIDEForWorktree stops the IDE adapter and releases the port. Best-effort.
+func (p *Provisioner) stopIDEForWorktree(ws *Workspace, worktreeName, worktreePath string) {
+	ide := ws.IDEForWorktree(worktreeName)
+	if ide == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
+		return
+	}
+
+	ctx := IDEContext{
+		Owner:        ws.Owner,
+		WorktreePath: worktreePath,
+		WorktreeName: worktreeName,
+		Port:         ide.Port,
+	}
+
+	if err := p.IDEAdapter.Stop(ctx); err != nil {
+		slog.Error("ide stop failed", "workspace", ws.Name, "error", err)
+	}
+
+	key := PortKey(ws.Owner, worktreeName)
+	if err := p.PortAllocator.Release(key); err != nil {
+		slog.Error("port release failed", "workspace", ws.Name, "error", err)
+	}
+
+	p.recordIDEEvent(ide, IDEEventStopped, fmt.Sprintf("port=%d", ide.Port))
+}
+
+// healthCheckIDEForWorktree checks if a running IDE for a worktree is still healthy.
+func (p *Provisioner) healthCheckIDEForWorktree(ws *Workspace, worktreeName string) {
+	ide := ws.IDEForWorktree(worktreeName)
+	if ide == nil || p.IDEAdapter == nil {
+		return
+	}
+
+	wt := ws.FindWorktree(worktreeName)
+	worktreePath := ""
+	if wt != nil {
+		worktreePath = wt.ProjectRoot
+	}
+
+	ctx := IDEContext{
+		Owner:        ws.Owner,
+		WorktreePath: worktreePath,
+		WorktreeName: worktreeName,
+		Port:         ide.Port,
+	}
+
+	err := p.IDEAdapter.HealthCheck(ctx)
+	wasReady := ide.Status == StatusReady
+
+	if err != nil && wasReady {
+		p.recordIDEEvent(ide, IDEEventStopped, "health check failed")
+	}
+}
+
+// IDEStartResult holds the outcome of a StartIDE operation.
+type IDEStartResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	WorktreeName  string `json:"worktree_name"`
+	Adapter       string `json:"adapter"`
+	Port          int    `json:"port"`
+	Status        string `json:"status"`
+}
+
+// StartIDE starts an IDE instance for a specific worktree within a workspace.
+// It allocates a port, starts the IDE adapter, records events, and persists state.
+// The operation is idempotent — if an IDE is already running for the worktree,
+// its current state is returned without restarting.
+func (p *Provisioner) StartIDE(store StateStore, workspaceName, worktreeName string) (*IDEStartResult, error) {
+	if p.IDEAdapter == nil || p.PortAllocator == nil {
+		return nil, &ProvisionError{
+			Code:    "IDE_NOT_CONFIGURED",
+			Message: "IDE adapter or port allocator not configured",
+		}
+	}
+
+	var result *IDEStartResult
+
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+
+		ws, ok := instances[workspaceName]
+		if !ok {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+			}
+		}
+
+		// Resolve the worktree — default to "default" if empty
+		if worktreeName == "" {
+			worktreeName = "default"
+		}
+		wt := ws.FindWorktree(worktreeName)
+		if wt == nil {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("worktree '%s' not found in workspace '%s'", worktreeName, workspaceName),
+			}
+		}
+
+		// Idempotent: if IDE is already running and ready, return current state
+		if existing := ws.IDEForWorktree(worktreeName); existing != nil && existing.Status == StatusReady {
+			result = &IDEStartResult{
+				WorkspaceName: workspaceName,
+				WorktreeName:  worktreeName,
+				Adapter:       existing.Adapter,
+				Port:          existing.Port,
+				Status:        string(existing.Status),
+			}
+			return nil
+		}
+
+		p.startIDEForWorktree(ws, worktreeName, wt.ProjectRoot)
+
+		ide := ws.IDEForWorktree(worktreeName)
+		if ide == nil {
+			return fmt.Errorf("IDE instance not created after start")
+		}
+
+		result = &IDEStartResult{
+			WorkspaceName: workspaceName,
+			WorktreeName:  worktreeName,
+			Adapter:       ide.Adapter,
+			Port:          ide.Port,
+			Status:        string(ide.Status),
+		}
+
+		instances[workspaceName] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// IDEStopResult holds the outcome of a StopIDE operation.
+type IDEStopResult struct {
+	WorkspaceName string `json:"workspace_name"`
+	WorktreeName  string `json:"worktree_name"`
+	Message       string `json:"message"`
+}
+
+// StopIDE stops an IDE instance for a specific worktree within a workspace.
+// It stops the IDE adapter, releases the port, records events, and persists state.
+// If no IDE is running for the worktree, a not-found error is returned.
+func (p *Provisioner) StopIDE(store StateStore, workspaceName, worktreeName string) (*IDEStopResult, error) {
+	if p.IDEAdapter == nil || p.PortAllocator == nil {
+		return nil, &ProvisionError{
+			Code:    "IDE_NOT_CONFIGURED",
+			Message: "IDE adapter or port allocator not configured",
+		}
+	}
+
+	var result *IDEStopResult
+
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+
+		ws, ok := instances[workspaceName]
+		if !ok {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("workspace '%s' not found", workspaceName),
+			}
+		}
+
+		if worktreeName == "" {
+			worktreeName = "default"
+		}
+
+		ide := ws.IDEForWorktree(worktreeName)
+		if ide == nil {
+			return &ProvisionError{
+				Code:    ErrNotFound,
+				Message: fmt.Sprintf("no IDE instance for worktree '%s' in workspace '%s'", worktreeName, workspaceName),
+			}
+		}
+
+		wt := ws.FindWorktree(worktreeName)
+		wtPath := ""
+		if wt != nil {
+			wtPath = wt.ProjectRoot
+		}
+
+		p.stopIDEForWorktree(ws, worktreeName, wtPath)
+
+		result = &IDEStopResult{
+			WorkspaceName: workspaceName,
+			WorktreeName:  worktreeName,
+			Message:       fmt.Sprintf("IDE stopped for worktree '%s' in workspace '%s'.", worktreeName, workspaceName),
+		}
+
+		instances[workspaceName] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// hydrateWorktrees fetches and fast-forward merges matching worktrees.
+func (p *Provisioner) hydrateWorktrees(ws *Workspace) {
+	p.recordWorkspaceEvent(ws, EventHydrateStarted, "")
+
+	entries, err := ListWorktreeEntries(ws.BareRoot, ws.Owner)
+	if err != nil {
+		p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("worktree list failed: %v", err))
+		return
+	}
+
+	for _, entry := range entries {
+		isDefault := filepath.Base(entry.Path) == "default"
+
+		if !isDefault {
+			continue
+		}
+
+		targetBranch := entry.Branch
+		if targetBranch == "" {
+			p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("%s: detached HEAD", filepath.Base(entry.Path)))
+			continue
+		}
+
+		dirty, dirtyErr := IsWorktreeDirty(entry.Path, ws.Owner)
+		if dirtyErr != nil {
+			p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("%s: dirty check failed: %v", filepath.Base(entry.Path), dirtyErr))
+			continue
+		}
+		if dirty {
+			p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("%s: uncommitted changes", filepath.Base(entry.Path)))
+			continue
+		}
+
+		pullErr := p.ffPull(entry.Path, targetBranch, ws.Owner)
+		if pullErr != nil {
+			errStr := pullErr.Error()
+			if strings.Contains(errStr, "Not possible to fast-forward") || strings.Contains(errStr, "fatal:") {
+				p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("%s: branch diverged, ff-only not possible", filepath.Base(entry.Path)))
+			} else {
+				p.recordWorkspaceEvent(ws, EventHydrateSkipped, fmt.Sprintf("%s: pull failed: %v", filepath.Base(entry.Path), pullErr))
+			}
+			continue
+		}
+
+		p.recordWorkspaceEvent(ws, EventHydrateCompleted, targetBranch)
+
+		// After successful pull, sync and update submodules to pick up
+		// any submodule ref changes from the pulled commits.
+		p.syncAndUpdateSubmodules(ws, entry.Path)
+	}
+}
+
+// ffPull runs git -C <worktreePath> pull --ff-only origin <branch> as owner.
+func (p *Provisioner) ffPull(worktreePath, branch, owner string) error {
+	pullCmd := fmt.Sprintf("git -C %s pull --ff-only origin %s", worktreePath, branch)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", pullCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "pull", "--ff-only", "origin", branch)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// submoduleUpdate runs git -C <worktreePath> submodule update --init --recursive
+// as owner. Best-effort: logs a warning on failure, does not return error.
+// Repos without submodules are unaffected (the command is a no-op).
+func (p *Provisioner) submoduleUpdate(worktreePath, owner string) error {
+	subCmd := fmt.Sprintf("git -C %s submodule update --init --recursive", worktreePath)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", subCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "submodule", "update", "--init", "--recursive")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// submoduleSync runs git -C <worktreePath> submodule sync --recursive as owner.
+// Best-effort: logs a warning on failure, does not return error.
+// This should be called before submoduleUpdate after a pull to handle URL
+// changes in .gitmodules.
+func (p *Provisioner) submoduleSync(worktreePath, owner string) error {
+	syncCmd := fmt.Sprintf("git -C %s submodule sync --recursive", worktreePath)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", syncCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "submodule", "sync", "--recursive")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// hasSubmodules checks whether a worktree contains a .gitmodules file,
+// indicating the repo uses git submodules.
+func hasSubmodules(worktreePath string) bool {
+	info, err := os.Stat(filepath.Join(worktreePath, ".gitmodules"))
+	return err == nil && !info.IsDir()
+}
+
+// initSubmodules runs submodule update --init --recursive on a worktree path,
+// recording events on the workspace aggregate. Best-effort: failures are logged
+// and recorded as skipped events but do not block provisioning. Repos without
+// a .gitmodules file are skipped with a submodule_init_skipped event.
+func (p *Provisioner) initSubmodules(ws *Workspace, worktreePath string) {
+	if !hasSubmodules(worktreePath) {
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, "no .gitmodules found")
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
+
+	if err := p.submoduleUpdate(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule update failed", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule update failed: %v", err))
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitCompleted, worktreePath)
+}
+
+// syncAndUpdateSubmodules runs submodule sync then update on a worktree path
+// after a hydration pull. Best-effort: failures are logged and recorded as
+// skipped events. Repos without a .gitmodules file are skipped with a
+// submodule_init_skipped event.
+func (p *Provisioner) syncAndUpdateSubmodules(ws *Workspace, worktreePath string) {
+	if !hasSubmodules(worktreePath) {
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, "no .gitmodules found")
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
+
+	if err := p.submoduleSync(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule sync failed", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule sync failed: %v", err))
+		return
+	}
+
+	if err := p.submoduleUpdate(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule update failed after sync", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule update failed: %v", err))
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitCompleted, worktreePath)
+}
+
+// DeprovisionResult holds the outcome of a deprovision operation.
+type DeprovisionResult struct {
+	Removed          []string `json:"removed"`                     // workspace names removed
+	RemovedWorktrees []string `json:"removed_worktrees,omitempty"` // worktree names removed
+	Message          string   `json:"message"`
+}
+
+// Deprovision removes an entire workspace aggregate: stops all IDE instances,
+// removes all worktrees, removes the bare clone, removes the repo container
+// directory, and deletes the state entry.
+func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*DeprovisionResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[name]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("workspace '%s' not found", name),
+		}
+	}
+
+	// Guard: check for uncommitted changes in all worktrees (unless --force)
+	if !force {
+		for _, wt := range ws.Worktrees {
+			dirty, dirtyErr := IsWorktreeDirty(wt.ProjectRoot, ws.Owner)
+			if dirtyErr == nil && dirty {
+				return nil, &ProvisionError{
+					Code:    ErrWorktreeDirty,
+					Message: fmt.Sprintf("Worktree '%s' has uncommitted changes. Use --force to delete.", wt.Name),
+				}
+			}
+		}
+	}
+
+	// Stop all IDE instances
+	for wtName := range ws.IDE {
+		wt := ws.FindWorktree(wtName)
+		wtPath := ""
+		if wt != nil {
+			wtPath = wt.ProjectRoot
+		}
+		p.stopIDEForWorktree(ws, wtName, wtPath)
+	}
+
+	// Collect worktree names for the result
+	var removedWorktrees []string
+	for _, wt := range ws.Worktrees {
+		removedWorktrees = append(removedWorktrees, wt.Name)
+	}
+
+	// Remove all worktrees via git (non-default first, default last)
+	for _, wt := range ws.Worktrees {
+		if wt.IsDefault {
+			continue
+		}
+		_ = p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, force)
+	}
+	for _, wt := range ws.Worktrees {
+		if !wt.IsDefault {
+			continue
+		}
+		_ = p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, force)
+	}
+
+	// Remove bare clone and repo container directory
+	if ws.BareRoot != "" {
+		os.RemoveAll(ws.BareRoot)
+	}
+	if ws.RepoRoot != "" {
+		os.RemoveAll(ws.RepoRoot)
+	}
+
+	// Remove state entry
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+		delete(instances, name)
+		return store.Save(instances)
+	}); err != nil {
+		return nil, fmt.Errorf("remove state entry: %w", err)
+	}
+
+	slog.Info("workspace removed", "workspace", name, "phase", "deprovision")
+
+	suffix := ""
+	if force {
+		suffix = " (forced)"
+	}
+	return &DeprovisionResult{
+		Removed:          []string{name},
+		RemovedWorktrees: removedWorktrees,
+		Message:          fmt.Sprintf("Workspace '%s' removed%s.", name, suffix),
+	}, nil
+}
+
+// DeprovisionWorktree removes a single worktree from a workspace aggregate by branch name.
+// It stops the IDE instance for that worktree, runs `git worktree remove`, removes the
+// worktree entry from the slice and the IDE entry from the map, and saves the updated aggregate.
+// The default worktree cannot be removed — users must deprovision the entire workspace instead.
+func (p *Provisioner) DeprovisionWorktree(store StateStore, name, branch string, force bool) (*DeprovisionResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[name]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("workspace '%s' not found", name),
+		}
+	}
+
+	// Find the worktree by branch name
+	wt := ws.FindWorktreeByBranch(branch)
+	if wt == nil {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("worktree for branch '%s' not found in workspace '%s'", branch, name),
+		}
+	}
+
+	// Cannot remove the default worktree
+	if wt.IsDefault {
+		return nil, &ProvisionError{
+			Code:    ErrCannotDeleteDefault,
+			Message: fmt.Sprintf("Cannot remove the default worktree. Use 'workspace deprovision %s' to remove the entire workspace.", name),
+		}
+	}
+
+	// Guard: check for uncommitted changes (unless --force)
+	if !force {
+		dirty, dirtyErr := IsWorktreeDirty(wt.ProjectRoot, ws.Owner)
+		if dirtyErr == nil && dirty {
+			return nil, &ProvisionError{
+				Code:    ErrWorktreeDirty,
+				Message: fmt.Sprintf("Worktree '%s' has uncommitted changes. Use --force to delete.", wt.Name),
+			}
+		}
+	}
+
+	// Stop IDE for this worktree
+	p.stopIDEForWorktree(ws, wt.Name, wt.ProjectRoot)
+
+	// Remove the worktree via git
+	wtName := wt.Name
+	if err := p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, force); err != nil {
+		slog.Error("git worktree remove failed", "workspace", name, "worktree", wtName, "error", err)
+	}
+
+	// Remove worktree entry from the aggregate
+	ws.RemoveWorktreeByName(wtName)
+	ws.RemoveIDEForWorktree(wtName)
+
+	// Save the updated aggregate
+	if err := store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+		instances[name] = ws
+		return store.Save(instances)
+	}); err != nil {
+		return nil, fmt.Errorf("update state: %w", err)
+	}
+
+	slog.Info("worktree removed", "workspace", name, "worktree", wtName, "phase", "deprovision")
+
+	suffix := ""
+	if force {
+		suffix = " (forced)"
+	}
+	return &DeprovisionResult{
+		Removed:          []string{name},
+		RemovedWorktrees: []string{wtName},
+		Message:          fmt.Sprintf("Worktree '%s' removed from workspace '%s'%s.", wtName, name, suffix),
+	}, nil
+}
+
+// Prune removes all clean non-default worktrees within a single workspace aggregate.
+// It operates on the Worktrees slice, not on separate state entries.
+func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, error) {
+	instances, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+
+	ws, ok := instances[repoName]
+	if !ok {
+		return nil, &ProvisionError{
+			Code:    ErrNotFound,
+			Message: fmt.Sprintf("no workspaces found for '%s'", repoName),
+		}
+	}
+
+	result := &PruneResult{
+		Pruned:  []string{},
+		Skipped: []PruneSkipped{},
+	}
+
+	// Collect non-default worktrees from the aggregate's Worktrees slice
+	var nonDefaultWorktrees []Worktree
+	for _, wt := range ws.Worktrees {
+		if !wt.IsDefault {
+			nonDefaultWorktrees = append(nonDefaultWorktrees, wt)
+		}
+	}
+
+	if len(nonDefaultWorktrees) == 0 {
+		result.Message = "No non-default worktrees to prune."
+		return result, nil
+	}
+
+	// Prune each non-default worktree within the aggregate
+	var prunedNames []string
+	for _, wt := range nonDefaultWorktrees {
+		if wt.ProjectRoot != "" {
+			dirty, dirtyErr := IsWorktreeDirty(wt.ProjectRoot, ws.Owner)
+			if dirtyErr == nil && dirty {
+				result.Skipped = append(result.Skipped, PruneSkipped{
+					Name:   wt.Name,
+					Reason: "uncommitted changes",
+				})
+				continue
+			}
+		}
+
+		// Stop IDE for this worktree
+		p.stopIDEForWorktree(ws, wt.Name, wt.ProjectRoot)
+
+		// Remove the worktree via git
+		if wt.ProjectRoot != "" {
+			if err := p.removeWorktree(ws.BareRoot, wt.ProjectRoot, ws.Owner, false); err != nil {
+				result.Skipped = append(result.Skipped, PruneSkipped{
+					Name:   wt.Name,
+					Reason: fmt.Sprintf("remove failed: %v", err),
+				})
+				continue
+			}
+		}
+
+		result.Pruned = append(result.Pruned, wt.Name)
+		prunedNames = append(prunedNames, wt.Name)
+		slog.Info("worktree pruned", "workspace", repoName, "worktree", wt.Name, "phase", "prune")
+	}
+
+	if ws.BareRoot != "" {
+		p.pruneWorktrees(ws.BareRoot, ws.Owner)
+	}
+
+	// Update the aggregate: remove pruned worktrees from slice and IDE map
+	if len(prunedNames) > 0 {
+		for _, name := range prunedNames {
+			ws.RemoveWorktreeByName(name)
+			ws.RemoveIDEForWorktree(name)
+		}
+
+		if err := store.WithLock(func() error {
+			instances, err := store.Load()
+			if err != nil {
+				return err
+			}
+			instances[repoName] = ws
+			return store.Save(instances)
+		}); err != nil {
+			return nil, fmt.Errorf("update state: %w", err)
+		}
+	}
+
+	prunedCount := len(result.Pruned)
+	skippedCount := len(result.Skipped)
+
+	if skippedCount == 0 {
+		result.Message = fmt.Sprintf("%d worktree%s pruned.", prunedCount, pluralS(prunedCount))
+	} else {
+		result.Message = fmt.Sprintf("%d worktree%s pruned, %d skipped.", prunedCount, pluralS(prunedCount), skippedCount)
+	}
+
+	return result, nil
+}
+
+// pluralS returns "s" if count != 1, empty string otherwise.
+func pluralS(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// removeWorktree runs git -C <bareRoot> worktree remove <projectRoot> [--force] as owner.
+func (p *Provisioner) removeWorktree(bareRoot, projectRoot, owner string, force bool) error {
+	args := []string{"-C", bareRoot, "worktree", "remove", projectRoot}
+	if force {
+		args = append(args, "--force")
+	}
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		gitCmd := fmt.Sprintf("git -C %s worktree remove %s", bareRoot, projectRoot)
+		if force {
+			gitCmd += " --force"
+		}
+		cmd = exec.Command("su", "-", owner, "-c", gitCmd)
+	} else {
+		cmd = exec.Command("git", args...)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// pruneWorktrees runs git -C <bareRoot> worktree prune as owner.
+func (p *Provisioner) pruneWorktrees(bareRoot, owner string) {
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c",
+			fmt.Sprintf("git -C %s worktree prune", bareRoot))
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "worktree", "prune")
+	}
+	_ = cmd.Run()
+}
+
+// bareClone runs git clone --bare as the owner.
+func (p *Provisioner) bareClone(cloneURL, bareRoot, owner string) error {
+	cloneCmd := fmt.Sprintf("git clone --bare %s %s", cloneURL, bareRoot)
 
 	var cmd *exec.Cmd
 	if owner != "" && owner != currentUser() {
 		cmd = exec.Command("su", "-", owner, "-c", cloneCmd)
 	} else {
-		cmd = exec.Command("git", "clone", url, dest)
+		cmd = exec.Command("git", "clone", "--bare", cloneURL, bareRoot)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// addWorktree runs git -C <bareRoot> worktree add [-f] <path> <branch> as the owner.
+func (p *Provisioner) addWorktree(bareRoot, worktreePath, branch, owner string) error {
+	wtCmd := fmt.Sprintf("git -C %s worktree add -f %s %s", bareRoot, worktreePath, branch)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", wtCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "worktree", "add", "-f", worktreePath, branch)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// fetchBranch attempts to fetch a specific branch from origin. Non-fatal if it fails.
+func (p *Provisioner) fetchBranch(bareRoot, branch, owner string) {
+	fetchCmd := fmt.Sprintf("git -C %s fetch origin %s", bareRoot, branch)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", fetchCmd)
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "fetch", "origin", branch)
+	}
+
+	_ = cmd.Run()
+}
+
+// resolveDefaultBranch reads the HEAD symbolic ref from a bare clone.
+func resolveDefaultBranch(bareRoot, owner string) (string, error) {
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c",
+			fmt.Sprintf("git -C %s symbolic-ref --short HEAD", bareRoot))
+	} else {
+		cmd = exec.Command("git", "-C", bareRoot, "symbolic-ref", "--short", "HEAD")
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("symbolic-ref failed: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("symbolic-ref returned empty string")
+	}
+	return branch, nil
+}
+
+// worktreeExists checks if a worktree (or clone) exists at the given path.
+func worktreeExists(projectRoot string) bool {
+	gitPath := filepath.Join(projectRoot, ".git")
+	_, err := os.Stat(gitPath)
+	return err == nil
+}
+
+// dirExists checks if a directory exists.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func (p *Provisioner) persistState(store StateStore, name string, ws *Workspace) error {
+	return store.WithLock(func() error {
+		instances, err := store.Load()
+		if err != nil {
+			return err
+		}
+		instances[name] = ws
+		return store.Save(instances)
+	})
+}
+
+func validateSpec(spec WorkspaceSpec) error {
+	var missing []string
+	if spec.Name == "" {
+		missing = append(missing, "name")
+	}
+	if spec.VCS.CloneURL == "" && spec.Template == nil {
+		missing = append(missing, "vcs.clone_url")
+	}
+	if spec.Owner == "" {
+		missing = append(missing, "owner")
+	}
+	if len(missing) > 0 {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "missing required fields",
+			Detail:  strings.Join(missing, ", "),
+		}
+	}
+
+	if err := validateName(spec.Name); err != nil {
+		return err
+	}
+
+	if spec.Template != nil {
+		if spec.Template.CloneURL == "" {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "template.clone_url is required when template is set",
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateName checks workspace name safety.
+// Names follow the pattern "repo" or "repo/worktree" (at most 2 segments).
+func validateName(name string) error {
+	if len(name) > 128 {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "name too long",
+			Detail:  fmt.Sprintf("name must be <= 128 characters, got %d", len(name)),
+		}
+	}
+
+	const unsafeChars = "\x00\\:*?\"<>|&;`$!#{}[]()'\n\r\t"
+	for _, ch := range name {
+		if strings.ContainsRune(unsafeChars, ch) {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains unsafe character",
+				Detail:  fmt.Sprintf("character %q (U+%04X) is not allowed in workspace names", ch, ch),
+			}
+		}
+	}
+
+	// Segment validation: at most 2 segments (repo/worktree)
+	segments := strings.Split(name, "/")
+	if len(segments) > 2 {
+		return &ProvisionError{
+			Code:    ErrSpecInvalid,
+			Message: "name has too many path segments",
+			Detail:  fmt.Sprintf("at most 2 segments allowed (repo/worktree), got %d", len(segments)),
+		}
+	}
+
+	// No empty segments (leading/trailing slash, double slash)
+	for _, seg := range segments {
+		if seg == "" {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains empty segment",
+				Detail:  "each path segment must be non-empty",
+			}
+		}
+	}
+
+	// No path traversal
+	for _, seg := range segments {
+		if seg == "." || seg == ".." {
+			return &ProvisionError{
+				Code:    ErrSpecInvalid,
+				Message: "name contains path traversal",
+				Detail:  fmt.Sprintf("segment %q is not allowed", seg),
+			}
+		}
+	}
+
+	return nil
+}
+
+func ResolveHeadCommit(projectRoot, owner string) string {
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c",
+			fmt.Sprintf("git -C %s rev-parse HEAD", projectRoot))
+	} else {
+		cmd = exec.Command("git", "-C", projectRoot, "rev-parse", "HEAD")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func currentUser() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "root"
+}
+
+type ProvisionError struct {
+	Code    string
+	Message string
+	Detail  string
+}
+
+func (e *ProvisionError) Error() string {
+	return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Detail)
+}
+
+// cloneInto runs git clone <url> <dest> as the spec owner.
+func (p *Provisioner) cloneInto(url, dest, owner string) error {
+	cloneCmd := fmt.Sprintf("git clone --recurse-submodules %s %s", url, dest)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", cloneCmd)
+	} else {
+		cmd = exec.Command("git", "clone", "--recurse-submodules", url, dest)
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -384,7 +1501,6 @@ func (p *Provisioner) gitRemoteRemove(bareRoot, name, owner string) {
 
 // copyDir copies all files and directories from src into dst.
 func (p *Provisioner) copyDir(src, dst string) error {
-	// Use cp -a for reliable recursive copy with permissions preserved
 	cmd := exec.Command("cp", "-a", src+"/.", dst+"/")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -439,8 +1555,7 @@ func (p *Provisioner) gitAddAndCommit(worktreePath, message, owner string) error
 	return nil
 }
 
-// resolveTemplateRepo reads the template remote URL from a bare repo.
-// Returns empty string if the "template" remote does not exist.
+// ResolveTemplateRepo reads the template remote URL from a bare repo.
 func ResolveTemplateRepo(bareRoot, owner string) string {
 	remoteCmd := fmt.Sprintf("git -C %s remote get-url template", bareRoot)
 
@@ -456,854 +1571,4 @@ func ResolveTemplateRepo(bareRoot, owner string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// provisionWorktree adds a worktree from an existing bare clone.
-// If needsBareClone is true, the bare clone is created first with clone events.
-func (p *Provisioner) provisionWorktree(store StateStore, spec WorkspaceSpec, needsBareClone bool) (*Workspace, error) {
-	now := time.Now().UTC()
-
-	inst := &Workspace{
-		Spec:           spec,
-		ProvisionedAt:  &now,
-	}
-
-	// If bare clone doesn't exist yet, create it with events
-	if needsBareClone {
-		p.recordWorkspaceEvent(inst, EventCloneStarted, spec.VCS.CloneURL)
-		if err := p.bareClone(spec); err != nil {
-			errMsg := fmt.Sprintf("git clone --bare failed: %v", err)
-			p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-			inst.LastError = &errMsg
-			p.persistState(store, spec.Name, inst)
-			return inst, &ProvisionError{
-				Code:    ErrCloneFailed,
-				Message: "git clone --bare failed",
-				Detail:  err.Error(),
-			}
-		}
-		p.recordWorkspaceEvent(inst, EventCloneCompleted, "")
-	}
-
-	// Determine worktree path
-	var worktreePath string
-	if spec.IsDefault {
-		worktreePath = filepath.Join(spec.RepoRoot, "default")
-	} else {
-		// mkdir -p .worktrees/
-		worktreesDir := filepath.Join(spec.RepoRoot, ".worktrees")
-		if err := os.MkdirAll(worktreesDir, 0755); err != nil {
-			return nil, fmt.Errorf("create .worktrees dir: %w", err)
-		}
-		worktreePath = filepath.Join(worktreesDir, spec.WorktreeName)
-	}
-
-	// Fetch the branch if it doesn't exist locally
-	p.fetchBranch(spec.BareRoot, spec.VCS.Branch, spec.Owner)
-
-	// git -C <bare_root> worktree add <path> <branch>
-	p.recordWorkspaceEvent(inst, EventWorktreeCreating, spec.VCS.Branch)
-	if err := p.addWorktree(spec.BareRoot, worktreePath, spec.VCS.Branch, spec.Owner); err != nil {
-		errMsg := fmt.Sprintf("git worktree add failed: %v", err)
-		p.recordWorkspaceEvent(inst, EventProvisionFailed, errMsg)
-		inst.LastError = &errMsg
-		p.persistState(store, spec.Name, inst)
-		return inst, &ProvisionError{
-			Code:    ErrCloneFailed,
-			Message: "git worktree add failed",
-			Detail:  err.Error(),
-		}
-	}
-	p.recordWorkspaceEvent(inst, EventWorktreeCreated, spec.VCS.Branch)
-
-	p.hydrate(inst, spec)
-	inst.HeadCommit = ResolveHeadCommit(spec.ProjectRoot, spec.Owner)
-	p.startIDE(inst, spec)
-
-	if err := p.persistState(store, spec.Name, inst); err != nil {
-		return nil, err
-	}
-
-	return inst, nil
-}
-
-// startIDE allocates a port, starts the IDE adapter, and updates instance state.
-// IDE failures are non-fatal — events are emitted but lifecycle stays Ready.
-func (p *Provisioner) startIDE(inst *Workspace, spec WorkspaceSpec) {
-	if spec.IDE == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
-		return
-	}
-
-	key := PortKey(spec.Owner, spec.WorktreeName)
-	port, err := p.PortAllocator.Allocate(key)
-	if err != nil {
-		// Create a minimal IDEInstance to record the failure event
-		if inst.IDE == nil {
-			inst.IDE = &IDEInstance{Name: spec.Name, Adapter: p.IDEAdapter.Name(), Port: 0}
-		}
-		p.recordIDEEvent(inst.IDE, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
-		return
-	}
-
-	// Initialise (or re-initialise) the IDEInstance for this adapter + port
-	inst.IDE = &IDEInstance{
-		Name:    spec.Name,
-		Adapter: p.IDEAdapter.Name(),
-		Port:    port,
-	}
-
-	ctx := IDEContext{
-		Owner:        spec.Owner,
-		WorktreePath: spec.ProjectRoot,
-		WorktreeName: spec.WorktreeName,
-		Port:         port,
-	}
-
-	p.recordIDEEvent(inst.IDE, IDEEventStarted, fmt.Sprintf("port=%d", port))
-	if err := p.IDEAdapter.Start(ctx); err != nil {
-		p.recordIDEEvent(inst.IDE, IDEEventFailed, err.Error())
-		return
-	}
-
-	p.recordIDEEvent(inst.IDE, IDEEventReady, fmt.Sprintf("port=%d", port))
-}
-
-// stopIDE stops the IDE adapter and releases the port. Best-effort.
-// The IDEInstance is preserved (not nil'd) with a StatusPending status and an
-// ide_stopped event in the trail. A nil inst.IDE means "IDE was never configured",
-// not "IDE was stopped".
-func (p *Provisioner) stopIDE(inst *Workspace, spec WorkspaceSpec) {
-	if inst.IDE == nil || p.IDEAdapter == nil || p.PortAllocator == nil {
-		return
-	}
-
-	ctx := IDEContext{
-		Owner:        spec.Owner,
-		WorktreePath: spec.ProjectRoot,
-		WorktreeName: spec.WorktreeName,
-		Port:         inst.IDE.Port,
-	}
-
-	if err := p.IDEAdapter.Stop(ctx); err != nil {
-		slog.Error("ide stop failed", "workspace", spec.Name, "error", err)
-	}
-
-	key := PortKey(spec.Owner, spec.WorktreeName)
-	if err := p.PortAllocator.Release(key); err != nil {
-		slog.Error("port release failed", "workspace", spec.Name, "error", err)
-	}
-
-	p.recordIDEEvent(inst.IDE, IDEEventStopped, fmt.Sprintf("port=%d", inst.IDE.Port))
-}
-
-// healthCheckIDE checks if a running IDE is still healthy, updating status via events.
-func (p *Provisioner) healthCheckIDE(inst *Workspace) {
-	if inst.IDE == nil || p.IDEAdapter == nil {
-		return
-	}
-
-	ctx := IDEContext{
-		Owner:        inst.Spec.Owner,
-		WorktreePath: inst.Spec.ProjectRoot,
-		WorktreeName: inst.Spec.WorktreeName,
-		Port:         inst.IDE.Port,
-	}
-
-	err := p.IDEAdapter.HealthCheck(ctx)
-	wasReady := inst.IDE.Status == StatusReady
-
-	if err != nil && wasReady {
-		p.recordIDEEvent(inst.IDE, IDEEventStopped, "health check failed")
-	}
-}
-
-// resolveIDEAdapter validates the adapter name from the spec. Returns an error
-// for unknown adapter names.
-func (p *Provisioner) resolveIDEAdapter(spec WorkspaceSpec) error {
-	if spec.IDE == nil {
-		return nil
-	}
-	if p.IDEAdapter == nil {
-		return &ProvisionError{
-			Code:    ErrSpecInvalid,
-			Message: "IDE requested but no adapter configured",
-		}
-	}
-	if spec.IDE.Adapter != p.IDEAdapter.Name() {
-		return &ProvisionError{
-			Code:    ErrSpecInvalid,
-			Message: fmt.Sprintf("unknown IDE adapter %q", spec.IDE.Adapter),
-		}
-	}
-	return nil
-}
-
-// hydrate fetches and fast-forward merges matching worktrees so the user lands
-// on an up-to-date checkout. A worktree is a candidate if it is the default
-// worktree or its branch matches spec.VCS.Branch. Hydration is best-effort:
-// fetch failures, dirty worktrees, and diverged branches are logged and skipped
-// without blocking provisioning.
-func (p *Provisioner) hydrate(inst *Workspace, spec WorkspaceSpec) {
-	p.recordWorkspaceEvent(inst, EventHydrateStarted, "")
-
-	entries, err := ListWorktreeEntries(spec.BareRoot, spec.Owner)
-	if err != nil {
-		p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("worktree list failed: %v", err))
-		return
-	}
-
-	for _, entry := range entries {
-		// Filter: only hydrate the default worktree or worktrees on the requested branch
-		isDefault := filepath.Base(entry.Path) == "default"
-		branchMatch := entry.Branch == spec.VCS.Branch
-
-		if !isDefault && !branchMatch {
-			continue
-		}
-
-		targetBranch := entry.Branch
-		if targetBranch == "" {
-			// Detached HEAD or unknown branch — skip
-			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: detached HEAD", filepath.Base(entry.Path)))
-			continue
-		}
-
-		// Check for dirty worktree before pulling
-		dirty, dirtyErr := IsWorktreeDirty(entry.Path, spec.Owner)
-		if dirtyErr != nil {
-			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: dirty check failed: %v", filepath.Base(entry.Path), dirtyErr))
-			continue
-		}
-		if dirty {
-			p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: uncommitted changes", filepath.Base(entry.Path)))
-			continue
-		}
-
-		// Pull with fast-forward only (fetch + merge in one step).
-		// Using pull from the worktree context ensures proper ref resolution
-		// even when the bare clone lacks a fetch refspec.
-		pullErr := p.ffPull(entry.Path, targetBranch, spec.Owner)
-		if pullErr != nil {
-			errStr := pullErr.Error()
-			if strings.Contains(errStr, "Not possible to fast-forward") || strings.Contains(errStr, "fatal:") {
-				p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: branch diverged, ff-only not possible", filepath.Base(entry.Path)))
-			} else {
-				p.recordWorkspaceEvent(inst, EventHydrateSkipped, fmt.Sprintf("%s: pull failed: %v", filepath.Base(entry.Path), pullErr))
-			}
-			continue
-		}
-
-		p.recordWorkspaceEvent(inst, EventHydrateCompleted, targetBranch)
-	}
-}
-
-// ffPull runs git -C <worktreePath> pull --ff-only origin <branch> as owner.
-// This combines fetch and fast-forward merge in one step, which works correctly
-// in worktrees backed by a bare clone (where remote tracking refs may not be
-// configured).
-func (p *Provisioner) ffPull(worktreePath, branch, owner string) error {
-	pullCmd := fmt.Sprintf("git -C %s pull --ff-only origin %s", worktreePath, branch)
-
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c", pullCmd)
-	} else {
-		cmd = exec.Command("git", "-C", worktreePath, "pull", "--ff-only", "origin", branch)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-// DeprovisionResult holds the outcome of a deprovision operation.
-type DeprovisionResult struct {
-	Removed []string `json:"removed"` // workspace names removed
-	Message string   `json:"message"`
-}
-
-// Deprovision removes a single non-default worktree with dirty guards.
-func (p *Provisioner) Deprovision(store StateStore, name string, force bool) (*DeprovisionResult, error) {
-	// 1. Load instance from state store by name
-	instances, err := store.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
-	}
-
-	inst, ok := instances[name]
-	if !ok {
-		return nil, &ProvisionError{
-			Code:    ErrNotFound,
-			Message: fmt.Sprintf("workspace '%s' not found", name),
-		}
-	}
-
-	// 2. Guard: cannot delete default worktree
-	if inst.Spec.IsDefault {
-		return nil, &ProvisionError{
-			Code:    ErrCannotDeleteDefault,
-			Message: "Cannot delete default worktree. Use --all to remove the entire workspace including the bare clone.",
-		}
-	}
-
-	// 3. Guard: check for uncommitted changes (unless --force)
-	if !force {
-		dirty, dirtyErr := IsWorktreeDirty(inst.Spec.ProjectRoot, inst.Spec.Owner)
-		if dirtyErr == nil && dirty {
-			return nil, &ProvisionError{
-				Code:    ErrWorktreeDirty,
-				Message: fmt.Sprintf("Worktree '%s' has uncommitted changes. Use --force to delete.", inst.Spec.WorktreeName),
-			}
-		}
-	}
-
-	// 4. Stop IDE if running
-	p.stopIDE(inst, inst.Spec)
-
-	// 5. Remove worktree via git
-	if err := p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, force); err != nil {
-		return nil, fmt.Errorf("git worktree remove: %w", err)
-	}
-
-	// 6. Prune stale worktree metadata
-	p.pruneWorktrees(inst.Spec.BareRoot, inst.Spec.Owner)
-
-	// 7. Remove state entry
-	if err := store.WithLock(func() error {
-		instances, err := store.Load()
-		if err != nil {
-			return err
-		}
-		delete(instances, name)
-		return store.Save(instances)
-	}); err != nil {
-		return nil, fmt.Errorf("remove state entry: %w", err)
-	}
-
-	slog.Info("worktree removed", "workspace", name, "phase", "deprovision")
-
-	suffix := ""
-	if force {
-		suffix = " (forced)"
-	}
-	return &DeprovisionResult{
-		Removed: []string{name},
-		Message: fmt.Sprintf("Workspace '%s' removed%s.", name, suffix),
-	}, nil
-}
-
-// DeprovisionAll removes all worktrees, the bare clone, and the repo container for a workspace.
-func (p *Provisioner) DeprovisionAll(store StateStore, repoName string, force bool) (*DeprovisionResult, error) {
-	// 1. Find all instances matching the repo (by repo_root prefix)
-	instances, err := store.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
-	}
-
-	var matching []*Workspace
-	var matchingNames []string
-	var repoRoot, bareRoot string
-
-	for iname, inst := range instances {
-		// Match by exact repoName (default workspace) or by prefix "repoName/"
-		if iname == repoName || strings.HasPrefix(iname, repoName+"/") {
-			matching = append(matching, inst)
-			matchingNames = append(matchingNames, iname)
-			if repoRoot == "" {
-				repoRoot = inst.Spec.RepoRoot
-				bareRoot = inst.Spec.BareRoot
-			}
-		}
-	}
-
-	if len(matching) == 0 {
-		return nil, &ProvisionError{
-			Code:    ErrNotFound,
-			Message: fmt.Sprintf("no workspaces found for '%s'", repoName),
-		}
-	}
-
-	// 2. Guard: check all worktrees for uncommitted changes (unless --force)
-	if !force {
-		for _, inst := range matching {
-			dirty, dirtyErr := IsWorktreeDirty(inst.Spec.ProjectRoot, inst.Spec.Owner)
-			if dirtyErr == nil && dirty {
-				return nil, &ProvisionError{
-					Code:    ErrWorktreeDirty,
-					Message: fmt.Sprintf("Worktree '%s' has uncommitted changes. Use --force to delete.", inst.Spec.WorktreeName),
-				}
-			}
-		}
-	}
-
-	// 3. Stop all IDE adapters before removing worktrees
-	for _, inst := range matching {
-		p.stopIDE(inst, inst.Spec)
-	}
-
-	// 4. Remove all worktrees via git worktree remove (non-default first, default last)
-	for _, inst := range matching {
-		if inst.Spec.IsDefault {
-			continue
-		}
-		_ = p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, force)
-	}
-	for _, inst := range matching {
-		if !inst.Spec.IsDefault {
-			continue
-		}
-		_ = p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, force)
-	}
-
-	// 4. Remove the bare clone: rm -rf <bare_root>
-	if bareRoot != "" {
-		os.RemoveAll(bareRoot)
-	}
-
-	// 5. Remove the repo container: rm -rf <repo_root> (if empty or we're cleaning up)
-	if repoRoot != "" {
-		os.RemoveAll(repoRoot)
-	}
-
-	// 6. Remove all state entries for this repo
-	if err := store.WithLock(func() error {
-		instances, err := store.Load()
-		if err != nil {
-			return err
-		}
-		for _, iname := range matchingNames {
-			delete(instances, iname)
-		}
-		return store.Save(instances)
-	}); err != nil {
-		return nil, fmt.Errorf("remove state entries: %w", err)
-	}
-
-	// Collect worktree names for the result
-	var wtNames []string
-	for _, inst := range matching {
-		wtNames = append(wtNames, inst.Spec.WorktreeName)
-	}
-
-	slog.Info("full workspace removal", "workspace", repoName, "phase", "deprovision", "worktrees", wtNames, "bare_root", bareRoot)
-
-	return &DeprovisionResult{
-		Removed: matchingNames,
-		Message: fmt.Sprintf("Workspace '%s' fully removed.", repoName),
-	}, nil
-}
-
-// Prune removes all clean non-default worktrees for a given workspace (repo).
-// Dirty worktrees are skipped with a reason. The default worktree is never pruned.
-func (p *Provisioner) Prune(store StateStore, repoName string) (*PruneResult, error) {
-	// 1. Load all instances from state store
-	instances, err := store.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
-	}
-
-	// 2. Filter to instances matching the repo (by name or name prefix "repoName/")
-	var matching []*Workspace
-	var matchingNames []string
-	var bareRoot string
-
-	for iname, inst := range instances {
-		if iname == repoName || strings.HasPrefix(iname, repoName+"/") {
-			matching = append(matching, inst)
-			matchingNames = append(matchingNames, iname)
-			if bareRoot == "" {
-				bareRoot = inst.Spec.BareRoot
-			}
-		}
-	}
-
-	if len(matching) == 0 {
-		return nil, &ProvisionError{
-			Code:    ErrNotFound,
-			Message: fmt.Sprintf("no workspaces found for '%s'", repoName),
-		}
-	}
-
-	result := &PruneResult{
-		Pruned:  []string{},
-		Skipped: []PruneSkipped{},
-	}
-
-	// 3. For each non-default worktree, check dirty and remove or skip
-	var namesToRemove []string
-	for i, inst := range matching {
-		name := matchingNames[i]
-
-		// Skip the default worktree
-		if inst.Spec.IsDefault {
-			continue
-		}
-
-		// Check if dirty
-		dirty, dirtyErr := IsWorktreeDirty(inst.Spec.ProjectRoot, inst.Spec.Owner)
-		if dirtyErr == nil && dirty {
-			result.Skipped = append(result.Skipped, PruneSkipped{
-				Name:   name,
-				Reason: "uncommitted changes",
-			})
-			continue
-		}
-
-		// Stop IDE before removing
-		p.stopIDE(inst, inst.Spec)
-
-		// Clean: remove worktree via git
-		if err := p.removeWorktree(inst.Spec.BareRoot, inst.Spec.ProjectRoot, inst.Spec.Owner, false); err != nil {
-			result.Skipped = append(result.Skipped, PruneSkipped{
-				Name:   name,
-				Reason: fmt.Sprintf("remove failed: %v", err),
-			})
-			continue
-		}
-
-		result.Pruned = append(result.Pruned, name)
-		namesToRemove = append(namesToRemove, name)
-		slog.Info("worktree pruned", "workspace", name, "phase", "prune")
-	}
-
-	// 4. Run git worktree prune on bare root
-	if bareRoot != "" {
-		owner := ""
-		if len(matching) > 0 {
-			owner = matching[0].Spec.Owner
-		}
-		p.pruneWorktrees(bareRoot, owner)
-	}
-
-	// 5. Remove state entries for pruned worktrees
-	if len(namesToRemove) > 0 {
-		if err := store.WithLock(func() error {
-			instances, err := store.Load()
-			if err != nil {
-				return err
-			}
-			for _, name := range namesToRemove {
-				delete(instances, name)
-			}
-			return store.Save(instances)
-		}); err != nil {
-			return nil, fmt.Errorf("remove state entries: %w", err)
-		}
-	}
-
-	// 6. Build summary message
-	prunedCount := len(result.Pruned)
-	skippedCount := len(result.Skipped)
-
-	// Check if there were no non-default worktrees at all
-	hasNonDefault := false
-	for _, inst := range matching {
-		if !inst.Spec.IsDefault {
-			hasNonDefault = true
-			break
-		}
-	}
-
-	if !hasNonDefault {
-		result.Message = "No non-default worktrees to prune."
-	} else if skippedCount == 0 {
-		result.Message = fmt.Sprintf("%d worktree%s pruned.", prunedCount, pluralS(prunedCount))
-	} else {
-		result.Message = fmt.Sprintf("%d worktree%s pruned, %d skipped.", prunedCount, pluralS(prunedCount), skippedCount)
-	}
-
-	return result, nil
-}
-
-// pluralS returns "s" if count != 1, empty string otherwise.
-func pluralS(count int) string {
-	if count == 1 {
-		return ""
-	}
-	return "s"
-}
-
-// removeWorktree runs git -C <bareRoot> worktree remove <projectRoot> [--force] as owner.
-func (p *Provisioner) removeWorktree(bareRoot, projectRoot, owner string, force bool) error {
-	args := []string{"-C", bareRoot, "worktree", "remove", projectRoot}
-	if force {
-		args = append(args, "--force")
-	}
-
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		gitCmd := fmt.Sprintf("git -C %s worktree remove %s", bareRoot, projectRoot)
-		if force {
-			gitCmd += " --force"
-		}
-		cmd = exec.Command("su", "-", owner, "-c", gitCmd)
-	} else {
-		cmd = exec.Command("git", args...)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-// pruneWorktrees runs git -C <bareRoot> worktree prune as owner.
-func (p *Provisioner) pruneWorktrees(bareRoot, owner string) {
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c",
-			fmt.Sprintf("git -C %s worktree prune", bareRoot))
-	} else {
-		cmd = exec.Command("git", "-C", bareRoot, "worktree", "prune")
-	}
-	_ = cmd.Run()
-}
-
-// bareClone runs git clone --bare as the spec owner.
-func (p *Provisioner) bareClone(spec WorkspaceSpec) error {
-	cloneCmd := fmt.Sprintf("git clone --bare %s %s", spec.VCS.CloneURL, spec.BareRoot)
-
-	var cmd *exec.Cmd
-	if spec.Owner != "" && spec.Owner != currentUser() {
-		cmd = exec.Command("su", "-", spec.Owner, "-c", cloneCmd)
-	} else {
-		cmd = exec.Command("git", "clone", "--bare", spec.VCS.CloneURL, spec.BareRoot)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-// addWorktree runs git -C <bareRoot> worktree add [-f] <path> <branch> as the owner.
-// The -f flag allows checking out a branch already used by another worktree.
-func (p *Provisioner) addWorktree(bareRoot, worktreePath, branch, owner string) error {
-	wtCmd := fmt.Sprintf("git -C %s worktree add -f %s %s", bareRoot, worktreePath, branch)
-
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c", wtCmd)
-	} else {
-		cmd = exec.Command("git", "-C", bareRoot, "worktree", "add", "-f", worktreePath, branch)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-// fetchBranch attempts to fetch a specific branch from origin. Non-fatal if it fails.
-func (p *Provisioner) fetchBranch(bareRoot, branch, owner string) {
-	fetchCmd := fmt.Sprintf("git -C %s fetch origin %s", bareRoot, branch)
-
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c", fetchCmd)
-	} else {
-		cmd = exec.Command("git", "-C", bareRoot, "fetch", "origin", branch)
-	}
-
-	_ = cmd.Run()
-}
-
-// resolveDefaultBranch reads the HEAD symbolic ref from a bare clone.
-func resolveDefaultBranch(bareRoot, owner string) (string, error) {
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c",
-			fmt.Sprintf("git -C %s symbolic-ref --short HEAD", bareRoot))
-	} else {
-		cmd = exec.Command("git", "-C", bareRoot, "symbolic-ref", "--short", "HEAD")
-	}
-
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("symbolic-ref failed: %w", err)
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "" {
-		return "", fmt.Errorf("symbolic-ref returned empty string")
-	}
-	return branch, nil
-}
-
-// worktreeExists checks if a worktree (or clone) exists at the given path.
-// Worktrees have .git as a file; traditional clones have .git as a directory.
-// Either form counts as existing.
-func worktreeExists(projectRoot string) bool {
-	gitPath := filepath.Join(projectRoot, ".git")
-	_, err := os.Stat(gitPath)
-	return err == nil
-}
-
-// dirExists checks if a directory exists.
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
-}
-
-func (p *Provisioner) persistState(store StateStore, name string, inst *Workspace) error {
-	return store.WithLock(func() error {
-		instances, err := store.Load()
-		if err != nil {
-			return err
-		}
-		instances[name] = inst
-		return store.Save(instances)
-	})
-}
-
-func validateSpec(spec WorkspaceSpec) error {
-	var missing []string
-	if spec.Name == "" {
-		missing = append(missing, "name")
-	}
-	// VCS.CloneURL and VCS.Branch are required only when Template is absent
-	if spec.VCS.CloneURL == "" && spec.Template == nil {
-		missing = append(missing, "vcs.clone_url")
-	}
-	if spec.VCS.Branch == "" && spec.Template == nil {
-		missing = append(missing, "vcs.branch")
-	}
-	if spec.ProjectRoot == "" {
-		missing = append(missing, "project_root")
-	}
-	if spec.RepoRoot == "" {
-		missing = append(missing, "repo_root")
-	}
-	if spec.BareRoot == "" {
-		missing = append(missing, "bare_root")
-	}
-	if spec.WorktreeName == "" {
-		missing = append(missing, "worktree_name")
-	}
-	if spec.Owner == "" {
-		missing = append(missing, "owner")
-	}
-	if len(missing) > 0 {
-		return &ProvisionError{
-			Code:    ErrSpecInvalid,
-			Message: "missing required fields",
-			Detail:  strings.Join(missing, ", "),
-		}
-	}
-
-	// Validate spec.Name for custom name safety.
-	if err := validateName(spec.Name); err != nil {
-		return err
-	}
-
-	// Template-specific validation
-	if spec.Template != nil {
-		if spec.Template.CloneURL == "" {
-			return &ProvisionError{
-				Code:    ErrSpecInvalid,
-				Message: "template.clone_url is required when template is set",
-			}
-		}
-	}
-
-	return nil
-}
-
-// validateName checks that a workspace name is safe for state file keying,
-// filesystem operations, and display. Custom names (not derived from repo slugs)
-// must satisfy these constraints:
-//   - Length <= 128 characters
-//   - At most one "/" separator (worktree notation: "name/branch")
-//   - No path traversal segments ("." or "..")
-//   - No null bytes or shell/filesystem-unsafe characters
-func validateName(name string) error {
-	// Length check
-	if len(name) > 128 {
-		return &ProvisionError{
-			Code:    ErrSpecInvalid,
-			Message: "name too long",
-			Detail:  fmt.Sprintf("name must be <= 128 characters, got %d", len(name)),
-		}
-	}
-
-	// At most one "/" (worktree notation: "repo/branch")
-	segments := strings.Split(name, "/")
-	if len(segments) > 2 {
-		return &ProvisionError{
-			Code:    ErrSpecInvalid,
-			Message: "name contains too many path segments",
-			Detail:  fmt.Sprintf("at most one '/' allowed (worktree notation), got %d segments", len(segments)),
-		}
-	}
-
-	// No path traversal or empty segments
-	for _, seg := range segments {
-		if seg == "" {
-			return &ProvisionError{
-				Code:    ErrSpecInvalid,
-				Message: "name contains empty segment",
-				Detail:  "name segments must be non-empty (no leading, trailing, or consecutive '/')",
-			}
-		}
-		if seg == "." || seg == ".." {
-			return &ProvisionError{
-				Code:    ErrSpecInvalid,
-				Message: "name contains path traversal",
-				Detail:  fmt.Sprintf("segment %q is not allowed", seg),
-			}
-		}
-	}
-
-	// No null bytes or shell/filesystem-unsafe characters
-	const unsafeChars = "\x00\\:*?\"<>|&;`$!#{}[]()'\n\r\t"
-	for _, ch := range name {
-		if strings.ContainsRune(unsafeChars, ch) {
-			return &ProvisionError{
-				Code:    ErrSpecInvalid,
-				Message: "name contains unsafe character",
-				Detail:  fmt.Sprintf("character %q (U+%04X) is not allowed in workspace names", ch, ch),
-			}
-		}
-	}
-
-	return nil
-}
-
-func ResolveHeadCommit(projectRoot, owner string) string {
-	var cmd *exec.Cmd
-	if owner != "" && owner != currentUser() {
-		cmd = exec.Command("su", "-", owner, "-c",
-			fmt.Sprintf("git -C %s rev-parse HEAD", projectRoot))
-	} else {
-		cmd = exec.Command("git", "-C", projectRoot, "rev-parse", "HEAD")
-	}
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-func currentUser() string {
-	if u := os.Getenv("USER"); u != "" {
-		return u
-	}
-	return "root"
-}
-
-type ProvisionError struct {
-	Code    string
-	Message string
-	Detail  string
-}
-
-func (e *ProvisionError) Error() string {
-	return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Detail)
 }

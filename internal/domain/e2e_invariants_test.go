@@ -21,7 +21,7 @@ func TestDefaultActivityLogPath(t *testing.T) {
 
 func TestWorkspaceAggregate_RecordEvent_SetsScope(t *testing.T) {
 	ws := &Workspace{
-		Spec: WorkspaceSpec{Name: "infra"},
+		Name: "infra",
 	}
 	ws.RecordEvent(EventCloneStarted, "testing")
 
@@ -140,7 +140,7 @@ func TestDaemonState_TopLevelSchema(t *testing.T) {
 	state := DaemonState{
 		Workspaces: map[string]*Workspace{
 			"infra": {
-				Spec: WorkspaceSpec{Name: "infra"},
+				Name: "infra",
 			},
 		},
 		Credentials: map[string]*CredentialState{
@@ -192,12 +192,15 @@ func TestScopeKindConstants(t *testing.T) {
 	}
 }
 
-func TestWorkspaceListItem_NoWorkspaceInstanceType(t *testing.T) {
-	// Verify that list responses use WorkspaceListItem (not WorkspaceInstance)
-	// by round-tripping through JSON and confirming the shape.
+func TestWorkspaceListItem_Schema(t *testing.T) {
+	// Verify that list responses use WorkspaceListItem with new aggregate fields.
 	ws := &Workspace{
-		Spec:   WorkspaceSpec{Name: "infra"},
+		Name:   "infra",
+		Repo:   RepoInfo{Host: "github.com", Slug: "org/infra"},
 		Status: StatusReady,
+		Worktrees: []Worktree{
+			{Name: "default", IsDefault: true},
+		},
 	}
 
 	item := WorkspaceListItemFromInstance(ws)
@@ -211,12 +214,15 @@ func TestWorkspaceListItem_NoWorkspaceInstanceType(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// Must have "spec" and "status" (Workspace fields)
-	if _, ok := raw["spec"]; !ok {
-		t.Error("WorkspaceListItem missing 'spec' key")
+	// Must have "name" and "status" (new aggregate fields)
+	if _, ok := raw["name"]; !ok {
+		t.Error("WorkspaceListItem missing 'name' key")
 	}
 	if _, ok := raw["status"]; !ok {
 		t.Error("WorkspaceListItem missing 'status' key")
+	}
+	if _, ok := raw["worktree_count"]; !ok {
+		t.Error("WorkspaceListItem missing 'worktree_count' key")
 	}
 }
 

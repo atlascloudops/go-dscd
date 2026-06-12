@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/atlascloudops/go-dscd/internal/domain"
 	"github.com/spf13/cobra"
@@ -10,12 +9,22 @@ import (
 
 func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
 	var force bool
-	var all bool
+	var worktree string
+	var all bool // backward-compat: accepted but ignored (remove-all is the default)
 
 	cmd := &cobra.Command{
 		Use:   "deprovision <name>",
-		Short: "Remove a workspace worktree",
-		Args:  cobra.ExactArgs(1),
+		Short: "Remove a workspace or a single worktree",
+		Long: `Remove a workspace or a single worktree.
+
+By default, removes the entire workspace: stops all IDE instances, removes
+all worktrees, removes the bare clone and repo container, and deletes the
+state entry.
+
+With --worktree <branch>, removes only the specified worktree from the
+workspace aggregate. The default worktree cannot be removed this way —
+deprovision the entire workspace instead.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			provisioner := &domain.Provisioner{
@@ -27,8 +36,8 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.Act
 			var result *domain.DeprovisionResult
 			var err error
 
-			if all {
-				result, err = provisioner.DeprovisionAll(store, name, force)
+			if worktree != "" {
+				result, err = provisioner.DeprovisionWorktree(store, name, worktree, force)
 			} else {
 				result, err = provisioner.Deprovision(store, name, force)
 			}
@@ -51,28 +60,8 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.Act
 
 			resp := domain.OkResponse("workspace.deprovision", result)
 
-			// Human-readable output when not JSON
 			if !jsonOutput {
-				if all {
-					var wtNames []string
-					for _, r := range result.Removed {
-						parts := strings.SplitN(r, "/", 2)
-						if len(parts) == 2 {
-							wtNames = append(wtNames, parts[1])
-						} else {
-							wtNames = append(wtNames, "default")
-						}
-					}
-					fmt.Printf("Removed worktrees: %s\n", strings.Join(wtNames, ", "))
-					fmt.Println(result.Message)
-				} else {
-					if force {
-						fmt.Println(result.Message)
-					} else {
-						fmt.Println("No uncommitted changes. Removing worktree.")
-						fmt.Println(result.Message)
-					}
-				}
+				fmt.Println(result.Message)
 				return nil
 			}
 
@@ -80,8 +69,10 @@ func newWorkspaceDeprovisionCmd(store domain.StateStore, activityLog *domain.Act
 		},
 	}
 
-	cmd.Flags().BoolVar(&force, "force", false, "Delete even if worktree has uncommitted changes")
-	cmd.Flags().BoolVar(&all, "all", false, "Remove all worktrees and the bare clone for this workspace")
+	cmd.Flags().BoolVar(&force, "force", false, "Delete even if worktrees have uncommitted changes")
+	cmd.Flags().StringVar(&worktree, "worktree", "", "Remove only the specified worktree (by branch name)")
+	cmd.Flags().BoolVar(&all, "all", false, "Remove entire workspace (default behavior, kept for backward compatibility)")
+	cmd.Flags().MarkHidden("all")
 
 	return cmd
 }

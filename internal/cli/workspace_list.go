@@ -27,24 +27,25 @@ func newWorkspaceListCmd(store domain.StateStore) *cobra.Command {
 			list := sortedInstances(instances)
 
 			if jsonOutput {
-				// Build list items with optional ide_port
 				items := make([]domain.WorkspaceListItem, len(list))
-				for i, inst := range list {
-					items[i] = domain.WorkspaceListItemFromInstance(inst)
+				for i, ws := range list {
+					items[i] = domain.WorkspaceListItemFromInstance(ws)
 				}
 				resp := domain.OkResponse("workspace.list", items)
 				return outputResponse(resp, 0)
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tLIFECYCLE\tREPO\tBRANCH\tIDE")
-			for _, inst := range list {
+			fmt.Fprintln(w, "NAME\tSTATUS\tREPO\tWORKTREES\tIDE")
+			for _, ws := range list {
 				ideCol := ""
-				if inst.IDE != nil && inst.IDE.Status == domain.StatusReady {
-					ideCol = fmt.Sprintf(":%d", inst.IDE.Port)
+				if defWt := ws.DefaultWorktree(); defWt != nil {
+					if ide := ws.IDEForWorktree(defWt.Name); ide != nil && ide.Status == domain.StatusReady {
+						ideCol = fmt.Sprintf(":%d", ide.Port)
+					}
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					inst.Spec.Name, inst.Status, inst.Spec.VCS.Repo, inst.Spec.VCS.Branch, ideCol)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
+					ws.Name, ws.Status, ws.Repo.Slug, len(ws.Worktrees), ideCol)
 			}
 			w.Flush()
 			return nil
@@ -54,11 +55,11 @@ func newWorkspaceListCmd(store domain.StateStore) *cobra.Command {
 
 func sortedInstances(instances map[string]*domain.Workspace) []*domain.Workspace {
 	list := make([]*domain.Workspace, 0, len(instances))
-	for _, inst := range instances {
-		list = append(list, inst)
+	for _, ws := range instances {
+		list = append(list, ws)
 	}
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].Spec.Name < list[j].Spec.Name
+		return list[i].Name < list[j].Name
 	})
 	return list
 }
