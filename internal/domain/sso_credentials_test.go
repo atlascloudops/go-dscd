@@ -35,6 +35,17 @@ func TestSsoTokenCachePath(t *testing.T) {
 	}
 }
 
+func TestSsoTokenCachePathMatchesAwsCli(t *testing.T) {
+	// sha1("dsc") = 324f464e6151a92cf57b26ef95dcfcf2059a8c44
+	// This matches the AWS CLI convention for sso-session based configs:
+	// the cache key is sha1(raw_session_name), not sha1(json-wrapped).
+	path := SsoTokenCachePath("jperez", "dsc")
+	expected := "/home/jperez/.aws/sso/cache/324f464e6151a92cf57b26ef95dcfcf2059a8c44.json"
+	if path != expected {
+		t.Fatalf("cache path does not match AWS CLI convention:\n  got:  %s\n  want: %s", path, expected)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Write + read token cache round-trip
 // ---------------------------------------------------------------------------
