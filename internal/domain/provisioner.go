@@ -185,7 +185,10 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 	}
 	p.recordWorkspaceEvent(ws, EventWorktreeCreated, defaultBranch)
 
-	// 5. Populate the default worktree on the aggregate
+	// 5. Initialize submodules (best-effort, before hydrate)
+	p.initSubmodules(ws, worktreePath)
+
+	// 6. Populate the default worktree on the aggregate
 	ws.Worktrees = []Worktree{
 		{
 			Name:        "default",
@@ -196,7 +199,7 @@ func (p *Provisioner) provisionBareCloneAndDefault(store StateStore, params Prov
 		},
 	}
 
-	// 6. Hydrate (fetch + fast-forward pull on default worktree)
+	// 7. Hydrate (fetch + fast-forward pull on default worktree)
 	p.hydrateWorktrees(ws)
 
 	// IDE startup is deferred to the ide-worktree-scoping story
@@ -431,6 +434,9 @@ func (p *Provisioner) AddWorktree(store StateStore, workspaceName, branch string
 			Detail:  err.Error(),
 		}
 	}
+
+	// Initialize submodules in the new worktree (best-effort)
+	p.initSubmodules(ws, projectRoot)
 
 	// Append worktree entry to the aggregate
 	wt := Worktree{
@@ -751,6 +757,10 @@ func (p *Provisioner) hydrateWorktrees(ws *Workspace) {
 		}
 
 		p.recordWorkspaceEvent(ws, EventHydrateCompleted, targetBranch)
+
+		// After successful pull, sync and update submodules to pick up
+		// any submodule ref changes from the pulled commits.
+		p.syncAndUpdateSubmodules(ws, entry.Path)
 	}
 }
 
@@ -770,6 +780,83 @@ func (p *Provisioner) ffPull(worktreePath, branch, owner string) error {
 		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// submoduleUpdate runs git -C <worktreePath> submodule update --init --recursive
+// as owner. Best-effort: logs a warning on failure, does not return error.
+// Repos without submodules are unaffected (the command is a no-op).
+func (p *Provisioner) submoduleUpdate(worktreePath, owner string) error {
+	subCmd := fmt.Sprintf("git -C %s submodule update --init --recursive", worktreePath)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", subCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "submodule", "update", "--init", "--recursive")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// submoduleSync runs git -C <worktreePath> submodule sync --recursive as owner.
+// Best-effort: logs a warning on failure, does not return error.
+// This should be called before submoduleUpdate after a pull to handle URL
+// changes in .gitmodules.
+func (p *Provisioner) submoduleSync(worktreePath, owner string) error {
+	syncCmd := fmt.Sprintf("git -C %s submodule sync --recursive", worktreePath)
+
+	var cmd *exec.Cmd
+	if owner != "" && owner != currentUser() {
+		cmd = exec.Command("su", "-", owner, "-c", syncCmd)
+	} else {
+		cmd = exec.Command("git", "-C", worktreePath, "submodule", "sync", "--recursive")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// initSubmodules runs submodule update --init --recursive on a worktree path,
+// recording events on the workspace aggregate. Best-effort: failures are logged
+// and recorded as skipped events but do not block provisioning.
+func (p *Provisioner) initSubmodules(ws *Workspace, worktreePath string) {
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
+
+	if err := p.submoduleUpdate(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule update failed", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule update failed: %v", err))
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitCompleted, worktreePath)
+}
+
+// syncAndUpdateSubmodules runs submodule sync then update on a worktree path
+// after a hydration pull. Best-effort: failures are logged and recorded as
+// skipped events.
+func (p *Provisioner) syncAndUpdateSubmodules(ws *Workspace, worktreePath string) {
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
+
+	if err := p.submoduleSync(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule sync failed", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule sync failed: %v", err))
+		return
+	}
+
+	if err := p.submoduleUpdate(worktreePath, ws.Owner); err != nil {
+		slog.Warn("submodule update failed after sync", "workspace", ws.Name, "path", worktreePath, "error", err)
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, fmt.Sprintf("submodule update failed: %v", err))
+		return
+	}
+
+	p.recordWorkspaceEvent(ws, EventSubmoduleInitCompleted, worktreePath)
 }
 
 // DeprovisionResult holds the outcome of a deprovision operation.
@@ -1327,13 +1414,13 @@ func (e *ProvisionError) Error() string {
 
 // cloneInto runs git clone <url> <dest> as the spec owner.
 func (p *Provisioner) cloneInto(url, dest, owner string) error {
-	cloneCmd := fmt.Sprintf("git clone %s %s", url, dest)
+	cloneCmd := fmt.Sprintf("git clone --recurse-submodules %s %s", url, dest)
 
 	var cmd *exec.Cmd
 	if owner != "" && owner != currentUser() {
 		cmd = exec.Command("su", "-", owner, "-c", cloneCmd)
 	} else {
-		cmd = exec.Command("git", "clone", url, dest)
+		cmd = exec.Command("git", "clone", "--recurse-submodules", url, dest)
 	}
 
 	output, err := cmd.CombinedOutput()

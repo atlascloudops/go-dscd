@@ -2010,3 +2010,272 @@ func getRemotePushURL(t *testing.T, bareRoot, remoteName string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// --- Submodule tests ---
+
+// createUpstreamRepoWithSubmodule creates an upstream repo that includes a
+// submodule. Returns the upstream bare path. The submodule repo is a separate
+// bare repo at <dir>/sub-upstream.git. The submodule is added at path "libs/sub".
+func createUpstreamRepoWithSubmodule(t *testing.T, dir string) string {
+	t.Helper()
+
+	// Create the submodule upstream
+	subUpstream := filepath.Join(dir, "sub-upstream.git")
+	runGit(t, "", "init", "--bare", subUpstream)
+	subScratch := filepath.Join(dir, "sub-scratch")
+	runGit(t, "", "clone", subUpstream, subScratch)
+	os.WriteFile(filepath.Join(subScratch, "lib.go"), []byte("package lib\n"), 0644)
+	runGit(t, subScratch, "add", ".")
+	runGit(t, subScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init sub")
+	runGit(t, subScratch, "push", "origin", "main")
+
+	// Create the main upstream with a submodule reference
+	mainUpstream := filepath.Join(dir, "upstream.git")
+	runGit(t, "", "init", "--bare", mainUpstream)
+	mainScratch := filepath.Join(dir, "scratch")
+	runGit(t, "", "clone", mainUpstream, mainScratch)
+	os.WriteFile(filepath.Join(mainScratch, "README.md"), []byte("# main\n"), 0644)
+	runGit(t, mainScratch, "add", ".")
+	runGit(t, mainScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init")
+
+	// Add submodule
+	runGit(t, mainScratch, "-c", "protocol.file.allow=always", "submodule", "add", subUpstream, "libs/sub")
+	runGit(t, mainScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "add submodule")
+	runGit(t, mainScratch, "push", "origin", "main")
+
+	return mainUpstream
+}
+
+func TestSubmoduleUpdate_CommandConstruction(t *testing.T) {
+	// Unit test: verify submoduleUpdate and submoduleSync return errors for
+	// non-existent paths (no git repo). This validates the command is constructed
+	// and executed.
+	p := &Provisioner{}
+
+	// Non-existent path should fail
+	err := p.submoduleUpdate("/nonexistent/path", "")
+	if err == nil {
+		t.Fatal("expected error for non-existent path")
+	}
+
+	err = p.submoduleSync("/nonexistent/path", "")
+	if err == nil {
+		t.Fatal("expected error for non-existent path")
+	}
+}
+
+func TestSubmoduleUpdate_NoSubmodules(t *testing.T) {
+	// submodule update --init --recursive on a repo without submodules is a no-op
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	// Create a simple repo with no submodules
+	repoDir := filepath.Join(dir, "repo")
+	runGit(t, "", "init", repoDir)
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test\n"), 0644)
+	runGit(t, repoDir, "add", ".")
+	runGit(t, repoDir, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init")
+
+	p := &Provisioner{}
+	// Should succeed (no-op)
+	if err := p.submoduleUpdate(repoDir, ""); err != nil {
+		t.Fatalf("submoduleUpdate on repo without submodules should be no-op, got: %v", err)
+	}
+	if err := p.submoduleSync(repoDir, ""); err != nil {
+		t.Fatalf("submoduleSync on repo without submodules should be no-op, got: %v", err)
+	}
+}
+
+func TestProvisionBareCloneAndDefault_WithSubmodules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepoWithSubmodule(t, dir)
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+
+	// Override protocol.file.allow for test (submodule uses file:// URL)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+
+	inst, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
+	}
+
+	// Verify submodule directory is populated
+	projectRoot := params.ProjectRoot()
+	submodulePath := filepath.Join(projectRoot, "libs", "sub", "lib.go")
+	if _, err := os.Stat(submodulePath); os.IsNotExist(err) {
+		t.Fatalf("submodule file libs/sub/lib.go was not populated after provision")
+	}
+
+	// Verify submodule events were emitted
+	hasSubmoduleStart := false
+	hasSubmoduleComplete := false
+	for _, ev := range inst.Events {
+		if ev.Event == string(EventSubmoduleInitStarted) {
+			hasSubmoduleStart = true
+		}
+		if ev.Event == string(EventSubmoduleInitCompleted) {
+			hasSubmoduleComplete = true
+		}
+	}
+	if !hasSubmoduleStart {
+		t.Fatal("expected submodule_init_started event")
+	}
+	if !hasSubmoduleComplete {
+		t.Fatal("expected submodule_init_completed event")
+	}
+}
+
+func TestHydrate_UpdatesSubmodules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepoWithSubmodule(t, dir)
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+
+	// Step 1: Provision
+	inst, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// Step 2: Update the submodule in the upstream (add a new file to sub-upstream)
+	subUpstream := filepath.Join(dir, "sub-upstream.git")
+	subScratch := filepath.Join(dir, "sub-scratch")
+	os.WriteFile(filepath.Join(subScratch, "new_file.go"), []byte("package lib // new\n"), 0644)
+	runGit(t, subScratch, "add", ".")
+	runGit(t, subScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "add new_file")
+	runGit(t, subScratch, "push", "origin", "main")
+
+	// Step 3: Update the submodule reference in the main repo's upstream
+	mainScratch := filepath.Join(dir, "scratch")
+	runGit(t, filepath.Join(mainScratch, "libs", "sub"), "pull", "origin", "main")
+	runGit(t, mainScratch, "add", "libs/sub")
+	runGit(t, mainScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "update submodule ref")
+	runGit(t, mainScratch, "push", "origin", "main")
+
+	// Step 4: Verify the new file doesn't exist yet in the workspace worktree
+	projectRoot := params.ProjectRoot()
+	newFilePath := filepath.Join(projectRoot, "libs", "sub", "new_file.go")
+	if _, err := os.Stat(newFilePath); err == nil {
+		t.Fatal("new_file.go should not exist before hydration")
+	}
+
+	// Step 5: Re-provision (idempotent path triggers hydration)
+	eventCountBefore := len(inst.Events)
+	inst2, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("re-provision failed: %v", err)
+	}
+	_ = subUpstream // keep reference
+
+	// Step 6: Verify the submodule was updated (new file should now exist)
+	if _, err := os.Stat(newFilePath); os.IsNotExist(err) {
+		t.Fatal("new_file.go should exist after hydration pulled updated submodule ref")
+	}
+
+	// Verify that submodule events were emitted during hydration
+	hasSubmoduleEvent := false
+	for i := eventCountBefore; i < len(inst2.Events); i++ {
+		if inst2.Events[i].Event == string(EventSubmoduleInitStarted) ||
+			inst2.Events[i].Event == string(EventSubmoduleInitCompleted) {
+			hasSubmoduleEvent = true
+			break
+		}
+	}
+	if !hasSubmoduleEvent {
+		t.Fatal("expected submodule events during hydration")
+	}
+}
+
+func TestAddWorktree_InitializesSubmodules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	upstreamBare := createUpstreamRepoWithSubmodule(t, dir)
+
+	// Also create a feature branch on upstream
+	mainScratch := filepath.Join(dir, "scratch")
+	runGit(t, mainScratch, "checkout", "-b", "feature-x")
+	os.WriteFile(filepath.Join(mainScratch, "feature.go"), []byte("package main\n"), 0644)
+	runGit(t, mainScratch, "add", ".")
+	runGit(t, mainScratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "feature branch")
+	runGit(t, mainScratch, "push", "origin", "feature-x")
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "myrepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/myrepo", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
+	t.Setenv("GIT_CONFIG_VALUE_0", "always")
+
+	// Step 1: Provision default worktree
+	_, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+
+	// Step 2: Add a worktree for the feature branch
+	result, err := p.AddWorktree(store, "myrepo", "feature-x")
+	if err != nil {
+		t.Fatalf("add worktree failed: %v", err)
+	}
+	if !result.Created {
+		t.Fatal("expected worktree to be created")
+	}
+
+	// Step 3: Verify submodule is populated in the new worktree
+	submodulePath := filepath.Join(result.ProjectRoot, "libs", "sub", "lib.go")
+	if _, err := os.Stat(submodulePath); os.IsNotExist(err) {
+		t.Fatal("submodule file libs/sub/lib.go was not populated in new worktree")
+	}
+}
