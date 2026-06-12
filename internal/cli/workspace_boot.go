@@ -11,10 +11,11 @@ func newWorkspaceBootCmd(store domain.StateStore, al *domain.ActivityLog, worksp
 		Short: "Hydrate and sync workspaces (systemd entry point)",
 		Long:  "Composes hydrate (discover unknown workspaces from disk) then sync (health-check all known workspaces). Intended as the systemd ExecStart command.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Resolve workspace root: flag > env > default
+			// Resolve workspace root: flag > env > pod-config > os.UserHomeDir()
 			wsRoot := *workspaceRoot
 			if wsRoot == "" {
-				wsRoot = domain.ResolveWorkspaceRoot("")
+				owner := resolveOwnerFromPodConfig()
+				wsRoot = domain.ResolveWorkspaceRoot(owner)
 			}
 
 			syncer := domain.NewSyncer(store, al).WithIDE(
