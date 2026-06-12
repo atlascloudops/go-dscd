@@ -226,6 +226,65 @@ func TestWorkspaceListItem_Schema(t *testing.T) {
 	}
 }
 
+func TestRecordIDEEvent_AppendsToWorkspaceEvents(t *testing.T) {
+	ws := &Workspace{Name: "infra"}
+	ide := &IDEInstance{Name: "infra", Adapter: "openvscode-server", Port: 9100}
+	ws.SetIDEForWorktree("default", ide)
+
+	p := &Provisioner{}
+	p.recordIDEEvent(ws, ide, IDEEventStarted, "port=9100")
+	p.recordIDEEvent(ws, ide, IDEEventReady, "port=9100")
+
+	// IDE child entity has both events
+	if len(ide.Events) != 2 {
+		t.Fatalf("ide.Events: got %d, want 2", len(ide.Events))
+	}
+
+	// Workspace aggregate also has both events
+	if len(ws.Events) != 2 {
+		t.Fatalf("ws.Events: got %d, want 2", len(ws.Events))
+	}
+
+	// Records are identical (same scope, event, detail)
+	for i := range ide.Events {
+		if ws.Events[i].Scope != ide.Events[i].Scope {
+			t.Errorf("event %d: scope mismatch: ws=%v, ide=%v", i, ws.Events[i].Scope, ide.Events[i].Scope)
+		}
+		if ws.Events[i].Event != ide.Events[i].Event {
+			t.Errorf("event %d: event mismatch: ws=%q, ide=%q", i, ws.Events[i].Event, ide.Events[i].Event)
+		}
+		if ws.Events[i].Detail != ide.Events[i].Detail {
+			t.Errorf("event %d: detail mismatch: ws=%q, ide=%q", i, ws.Events[i].Detail, ide.Events[i].Detail)
+		}
+	}
+
+	// Scope is ide-scoped, not workspace-scoped
+	if ws.Events[0].Scope.Kind != ScopeKindIDE {
+		t.Errorf("ws event scope kind = %q, want %q", ws.Events[0].Scope.Kind, ScopeKindIDE)
+	}
+}
+
+func TestRecordIDEEvent_DoesNotAffectWorkspaceStatus(t *testing.T) {
+	ws := &Workspace{Name: "infra", Status: StatusReady}
+	ide := &IDEInstance{Name: "infra", Adapter: "openvscode-server", Port: 9100}
+	ws.SetIDEForWorktree("default", ide)
+
+	p := &Provisioner{}
+	p.recordIDEEvent(ws, ide, IDEEventStarted, "port=9100")
+	p.recordIDEEvent(ws, ide, IDEEventReady, "port=9100")
+	p.recordIDEEvent(ws, ide, IDEEventFailed, "health check failed")
+
+	// Workspace status must remain "ready" — IDE events are informational
+	if ws.Status != StatusReady {
+		t.Errorf("ws.Status = %q after IDE events, want %q", ws.Status, StatusReady)
+	}
+
+	// IDE status should reflect the failure
+	if ide.Status != StatusFailed {
+		t.Errorf("ide.Status = %q, want %q", ide.Status, StatusFailed)
+	}
+}
+
 func TestActivityLog_FormatAndParseRoundTrip(t *testing.T) {
 	record := EventRecord{
 		Scope:     EventScope{Kind: "workspace", Name: "infra"},

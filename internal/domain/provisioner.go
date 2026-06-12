@@ -26,12 +26,16 @@ func (p *Provisioner) recordWorkspaceEvent(w *Workspace, event WorkspaceEvent, d
 	}
 }
 
-// recordIDEEvent records an IDE event via the aggregate's RecordEvent method
-// and appends the resulting EventRecord to the activity log.
-func (p *Provisioner) recordIDEEvent(ide *IDEInstance, event IDEEvent, detail string) {
+// recordIDEEvent records an IDE event via the child entity's RecordEvent method,
+// appends the same record to the parent workspace's unified event timeline, and
+// writes to the activity log. The workspace's status projection is not affected —
+// IDE events are informational to the workspace aggregate.
+func (p *Provisioner) recordIDEEvent(w *Workspace, ide *IDEInstance, event IDEEvent, detail string) {
 	ide.RecordEvent(event, detail)
+	record := ide.Events[len(ide.Events)-1]
+	w.Events = append(w.Events, record)
 	if p.ActivityLog != nil {
-		_ = p.ActivityLog.Append(ide.Events[len(ide.Events)-1])
+		_ = p.ActivityLog.Append(record)
 	}
 }
 
@@ -477,7 +481,7 @@ func (p *Provisioner) startIDEForWorktree(ws *Workspace, worktreeName, worktreeP
 			ide = &IDEInstance{Name: ws.Name, Adapter: p.IDEAdapter.Name(), Port: 0}
 			ws.SetIDEForWorktree(worktreeName, ide)
 		}
-		p.recordIDEEvent(ide, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
+		p.recordIDEEvent(ws, ide, IDEEventFailed, fmt.Sprintf("port allocation: %v", err))
 		return
 	}
 
@@ -495,13 +499,13 @@ func (p *Provisioner) startIDEForWorktree(ws *Workspace, worktreeName, worktreeP
 		Port:         port,
 	}
 
-	p.recordIDEEvent(ide, IDEEventStarted, fmt.Sprintf("port=%d", port))
+	p.recordIDEEvent(ws, ide, IDEEventStarted, fmt.Sprintf("port=%d", port))
 	if err := p.IDEAdapter.Start(ctx); err != nil {
-		p.recordIDEEvent(ide, IDEEventFailed, err.Error())
+		p.recordIDEEvent(ws, ide, IDEEventFailed, err.Error())
 		return
 	}
 
-	p.recordIDEEvent(ide, IDEEventReady, fmt.Sprintf("port=%d", port))
+	p.recordIDEEvent(ws, ide, IDEEventReady, fmt.Sprintf("port=%d", port))
 }
 
 // stopIDEForWorktree stops the IDE adapter and releases the port. Best-effort.
@@ -527,7 +531,7 @@ func (p *Provisioner) stopIDEForWorktree(ws *Workspace, worktreeName, worktreePa
 		slog.Error("port release failed", "workspace", ws.Name, "error", err)
 	}
 
-	p.recordIDEEvent(ide, IDEEventStopped, fmt.Sprintf("port=%d", ide.Port))
+	p.recordIDEEvent(ws, ide, IDEEventStopped, fmt.Sprintf("port=%d", ide.Port))
 }
 
 // healthCheckIDEForWorktree checks if a running IDE for a worktree is still healthy.
@@ -554,7 +558,7 @@ func (p *Provisioner) healthCheckIDEForWorktree(ws *Workspace, worktreeName stri
 	wasReady := ide.Status == StatusReady
 
 	if err != nil && wasReady {
-		p.recordIDEEvent(ide, IDEEventStopped, "health check failed")
+		p.recordIDEEvent(ws, ide, IDEEventStopped, "health check failed")
 	}
 }
 
