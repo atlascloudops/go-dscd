@@ -823,10 +823,23 @@ func (p *Provisioner) submoduleSync(worktreePath, owner string) error {
 	return nil
 }
 
+// hasSubmodules checks whether a worktree contains a .gitmodules file,
+// indicating the repo uses git submodules.
+func hasSubmodules(worktreePath string) bool {
+	info, err := os.Stat(filepath.Join(worktreePath, ".gitmodules"))
+	return err == nil && !info.IsDir()
+}
+
 // initSubmodules runs submodule update --init --recursive on a worktree path,
 // recording events on the workspace aggregate. Best-effort: failures are logged
-// and recorded as skipped events but do not block provisioning.
+// and recorded as skipped events but do not block provisioning. Repos without
+// a .gitmodules file are skipped with a submodule_init_skipped event.
 func (p *Provisioner) initSubmodules(ws *Workspace, worktreePath string) {
+	if !hasSubmodules(worktreePath) {
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, "no .gitmodules found")
+		return
+	}
+
 	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
 
 	if err := p.submoduleUpdate(worktreePath, ws.Owner); err != nil {
@@ -840,8 +853,14 @@ func (p *Provisioner) initSubmodules(ws *Workspace, worktreePath string) {
 
 // syncAndUpdateSubmodules runs submodule sync then update on a worktree path
 // after a hydration pull. Best-effort: failures are logged and recorded as
-// skipped events.
+// skipped events. Repos without a .gitmodules file are skipped with a
+// submodule_init_skipped event.
 func (p *Provisioner) syncAndUpdateSubmodules(ws *Workspace, worktreePath string) {
+	if !hasSubmodules(worktreePath) {
+		p.recordWorkspaceEvent(ws, EventSubmoduleInitSkipped, "no .gitmodules found")
+		return
+	}
+
 	p.recordWorkspaceEvent(ws, EventSubmoduleInitStarted, worktreePath)
 
 	if err := p.submoduleSync(worktreePath, ws.Owner); err != nil {

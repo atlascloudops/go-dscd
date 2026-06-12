@@ -2279,3 +2279,80 @@ func TestAddWorktree_InitializesSubmodules(t *testing.T) {
 		t.Fatal("submodule file libs/sub/lib.go was not populated in new worktree")
 	}
 }
+
+func TestProvision_NoSubmodules_SkipsSubmoduleInit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+
+	// Create a simple upstream with no submodules
+	upstreamBare := filepath.Join(dir, "upstream.git")
+	scratch := filepath.Join(dir, "scratch")
+	runGit(t, "", "init", scratch)
+	os.WriteFile(filepath.Join(scratch, "main.go"), []byte("package main\n"), 0644)
+	runGit(t, scratch, "add", ".")
+	runGit(t, scratch, "-c", "user.name=Test", "-c", "user.email=t@t.com", "commit", "-m", "init")
+	runGit(t, scratch, "clone", "--bare", scratch, upstreamBare)
+
+	store := newMemStore()
+	p := &Provisioner{}
+
+	params := ProvisionParams{
+		Spec: WorkspaceSpec{
+			Name:  "norepo",
+			VCS:   VCSTarget{Host: "github.com", Repo: "test/norepo", CloneURL: upstreamBare},
+			Owner: currentUser(),
+		},
+		WorkspaceRoot: filepath.Join(dir, "code"),
+	}
+
+	inst, err := p.Provision(store, params)
+	if err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+	if inst.Status != StatusReady {
+		t.Fatalf("expected ready, got %s", inst.Status)
+	}
+
+	// Verify submodule_init_skipped event was emitted (not started/completed)
+	hasSkipped := false
+	hasStarted := false
+	for _, ev := range inst.Events {
+		if ev.Event == string(EventSubmoduleInitSkipped) {
+			hasSkipped = true
+		}
+		if ev.Event == string(EventSubmoduleInitStarted) {
+			hasStarted = true
+		}
+	}
+	if !hasSkipped {
+		t.Fatal("expected submodule_init_skipped event for repo without submodules")
+	}
+	if hasStarted {
+		t.Fatal("should NOT emit submodule_init_started for repo without submodules")
+	}
+}
+
+func TestHasSubmodules(t *testing.T) {
+	dir := t.TempDir()
+
+	// No .gitmodules — should return false
+	if hasSubmodules(dir) {
+		t.Fatal("expected false for directory without .gitmodules")
+	}
+
+	// Create .gitmodules file
+	os.WriteFile(filepath.Join(dir, ".gitmodules"), []byte("[submodule \"lib\"]\n\tpath = lib\n"), 0644)
+	if !hasSubmodules(dir) {
+		t.Fatal("expected true for directory with .gitmodules")
+	}
+
+	// Create .gitmodules as a directory — should return false
+	dir2 := t.TempDir()
+	os.MkdirAll(filepath.Join(dir2, ".gitmodules"), 0755)
+	if hasSubmodules(dir2) {
+		t.Fatal("expected false for directory where .gitmodules is a directory")
+	}
+}
