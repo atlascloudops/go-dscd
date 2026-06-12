@@ -1319,9 +1319,6 @@ func validateSpec(spec WorkspaceSpec) error {
 	if spec.VCS.CloneURL == "" && spec.Template == nil {
 		missing = append(missing, "vcs.clone_url")
 	}
-	if spec.Owner == "" {
-		missing = append(missing, "owner")
-	}
 	if len(missing) > 0 {
 		return &ProvisionError{
 			Code:    ErrSpecInvalid,
