@@ -25,6 +25,11 @@ func newWorkspaceProvisionCmd(store domain.StateStore, activityLog *domain.Activ
 				return outputResponse(resp, 1)
 			}
 
+			// Default owner to the current process user (the SSH user)
+			if spec.Owner == "" {
+				spec.Owner = os.Getenv("USER")
+			}
+
 			// Resolve workspace root: flag > env > default
 			wsRoot := *workspaceRoot
 			if wsRoot == "" {

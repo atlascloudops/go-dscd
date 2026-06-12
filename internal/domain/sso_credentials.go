@@ -57,14 +57,10 @@ type SsoTokenStatus struct {
 // ---------------------------------------------------------------------------
 
 // SsoTokenCachePath computes the path to the SSO token cache file for a given
-// session. The filename is the SHA-1 hex digest of the JSON-serialised
-// {"startUrl": "...", "session": "..."} object, matching the convention used by
-// the AWS CLI / SDK.
+// session. The filename is the SHA-1 hex digest of the raw session name string,
+// matching the convention used by the AWS CLI for sso-session based configs.
 func SsoTokenCachePath(owner, sessionName string) string {
-	// AWS SDK uses sha1 of a JSON object with startUrl + session for the cache key.
-	// Since we key by session name (not start URL), we hash the session name.
-	payload := fmt.Sprintf(`{"sessionName":"%s"}`, sessionName)
-	h := sha1.Sum([]byte(payload))
+	h := sha1.Sum([]byte(sessionName))
 	filename := fmt.Sprintf("%x.json", h)
 	return filepath.Join("/home", owner, ".aws", "sso", "cache", filename)
 }

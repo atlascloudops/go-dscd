@@ -116,12 +116,33 @@ func NewRootCommand(version string) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	shell.AddCommand(newShellInstallCmd())
+	shellEnv := &cobra.Command{
+		Use:   "env",
+		Short: "Manage shell environment variables",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	shellEnv.AddCommand(newShellEnvSetCmd())
+	shell.AddCommand(newShellInstallCmd(), shellEnv)
+
+	handshake := &cobra.Command{
+		Use:   "handshake",
+		Short: "Composed credential and environment sync",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	handshake.AddCommand(
+		newHandshakeStatusCmd(),
+		newHandshakeSyncCmd(fs, al.get()),
+	)
 
 	root.AddCommand(
 		workspace,
 		credentials,
 		shell,
+		handshake,
 		newStatusCmd(fs, version, &statePath),
 		newEventsCmd(func() *domain.ActivityLog {
 			return domain.NewActivityLog(activityLogPath)
