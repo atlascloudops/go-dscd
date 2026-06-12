@@ -116,7 +116,15 @@ func NewRootCommand(version string) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	shell.AddCommand(newShellInstallCmd())
+	shellEnv := &cobra.Command{
+		Use:   "env",
+		Short: "Manage shell environment variables",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	shellEnv.AddCommand(newShellEnvSetCmd())
+	shell.AddCommand(newShellInstallCmd(), shellEnv)
 
 	root.AddCommand(
 		workspace,
