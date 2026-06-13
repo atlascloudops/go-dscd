@@ -139,7 +139,7 @@ func TestValidateSpec_MissingFields(t *testing.T) {
 	if pe.Code != ErrSpecInvalid {
 		t.Fatalf("expected SPEC_INVALID, got %s", pe.Code)
 	}
-	for _, field := range []string{"name", "vcs.clone_url", "owner"} {
+	for _, field := range []string{"name", "vcs.clone_url"} {
 		if !strings.Contains(pe.Detail, field) {
 			t.Fatalf("expected detail to contain %q, got %q", field, pe.Detail)
 		}
@@ -162,13 +162,8 @@ func TestValidateSpec_MissingOwner(t *testing.T) {
 		Name: "test",
 		VCS:  VCSTarget{CloneURL: "https://github.com/org/repo.git"},
 	}
-	err := validateSpec(spec)
-	if err == nil {
-		t.Fatal("expected error when owner is empty")
-	}
-	pe := err.(*ProvisionError)
-	if !strings.Contains(pe.Detail, "owner") {
-		t.Fatalf("expected detail to mention owner, got %q", pe.Detail)
+	if err := validateSpec(spec); err != nil {
+		t.Fatalf("owner should be optional (defaulted by transport), got error: %v", err)
 	}
 }
 
