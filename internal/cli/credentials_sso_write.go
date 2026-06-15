@@ -1,0 +1,174 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"time"
+
+	"github.com/atlascloudops/go-dscd/internal/domain"
+	"github.com/atlascloudops/go-dscd/internal/infrastructure"
+	"github.com/spf13/cobra"
+)
+
+// SsoWriteResult holds the outcome of an SSO credentials write operation.
+type SsoWriteResult struct {
+	ProfilesWritten int    `json:"profiles_written"`
+	TokenCached     bool   `json:"token_cached"`
+	ActiveProfile   string `json:"active_profile"`
+}
+
+// writeSsoCredentials writes AWS config, token cache, active profile env,
+// chowns files, and records events. Returns the write result or an error.
+func writeSsoCredentials(owner string, payload domain.SsoWritePayload, store domain.StateStore, activityLog *domain.ActivityLog) (*SsoWriteResult, error) {
+	// 1. Write AWS config (session + profiles)
+	if err := domain.WriteAwsConfig(owner, payload.Session, payload.Profiles); err != nil {
+		return nil, fmt.Errorf("write aws config: %s", err.Error())
+	}
+
+	// 2. Write token cache
+	cachePath := domain.SsoTokenCachePath(owner, payload.Session.SessionName)
+	if err := domain.WriteSsoTokenCache(cachePath, payload.Session, payload.Token); err != nil {
+		return nil, fmt.Errorf("write token cache: %s", err.Error())
+	}
+
+	// 3. Inject AWS_PROFILE via ShellConfigurator
+	if payload.ActiveProfile != "" {
+		sc := infrastructure.NewShellConfigurator()
+		if err := sc.SetEnvironment(owner, map[string]string{
+			"AWS_PROFILE": payload.ActiveProfile,
+		}); err != nil {
+			return nil, fmt.Errorf("set AWS_PROFILE: %s", err.Error())
+		}
+	}
+
+	// 4. Best-effort chown on written files
+	chownSsoFiles(owner, cachePath)
+
+	// 5. Record credential events in state and activity log
+	recordSsoCredentialEvents(store, activityLog, owner, payload)
+
+	return &SsoWriteResult{
+		ProfilesWritten: len(payload.Profiles),
+		TokenCached:     true,
+		ActiveProfile:   payload.ActiveProfile,
+	}, nil
+}
+
+func newCredentialsSsoWriteCmd(store domain.StateStore, activityLog *domain.ActivityLog) *cobra.Command {
+	var owner string
+
+	cmd := &cobra.Command{
+		Use:   "write",
+		Short: "Write SSO credentials from stdin JSON",
+		Long:  "Reads an SsoWritePayload JSON from stdin and writes AWS config, token cache, and active profile.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			const cmdName = "credentials.sso.write"
+
+			if owner == "" {
+				resp := domain.ErrorResponse(cmdName, domain.ErrorInfo{
+					Code:    domain.ErrSpecInvalid,
+					Message: "--owner is required",
+				})
+				return outputResponse(resp, 1)
+			}
+
+			// Read JSON payload from stdin
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				resp := domain.ErrorResponse(cmdName, domain.ErrorInfo{
+					Code:    domain.ErrStateCorrupt,
+					Message: fmt.Sprintf("reading stdin: %s", err.Error()),
+				})
+				return outputResponse(resp, 1)
+			}
+
+			var payload domain.SsoWritePayload
+			if err := json.Unmarshal(data, &payload); err != nil {
+				resp := domain.ErrorResponse(cmdName, domain.ErrorInfo{
+					Code:    domain.ErrSpecInvalid,
+					Message: fmt.Sprintf("invalid JSON payload: %s", err.Error()),
+				})
+				return outputResponse(resp, 1)
+			}
+
+			result, err := writeSsoCredentials(owner, payload, store, activityLog)
+			if err != nil {
+				resp := domain.ErrorResponse(cmdName, domain.ErrorInfo{
+					Code:    domain.ErrStateCorrupt,
+					Message: err.Error(),
+				})
+				return outputResponse(resp, 1)
+			}
+
+			if jsonOutput {
+				resp := domain.OkResponse(cmdName, result)
+				return outputResponse(resp, 0)
+			}
+
+			fmt.Printf("Profiles written: %d\n", result.ProfilesWritten)
+			fmt.Printf("Token cached: %v\n", result.TokenCached)
+			if result.ActiveProfile != "" {
+				fmt.Printf("Active profile: %s\n", result.ActiveProfile)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&owner, "owner", "", "username that owns the credential files")
+	return cmd
+}
+
+// recordSsoCredentialEvents records SSO credential events in the daemon state
+// and appends them to the activity log.
+// This is best-effort — errors do not fail the write operation.
+func recordSsoCredentialEvents(s domain.StateStore, al *domain.ActivityLog, owner string, payload domain.SsoWritePayload) {
+	_ = s.WithLock(func() error {
+		state, err := s.LoadState()
+		if err != nil {
+			return err
+		}
+
+		cs := state.Credentials[owner]
+		if cs == nil {
+			cs = &domain.CredentialState{Owner: owner}
+			state.Credentials[owner] = cs
+		}
+
+		// Record config write event
+		configDetail := fmt.Sprintf("session=%s, profiles=%d", payload.Session.SessionName, len(payload.Profiles))
+		cs.RecordEvent(domain.CredEventSsoConfigWritten, configDetail)
+
+		// Append config event to activity log (best-effort)
+		if al != nil && len(cs.Events) > 0 {
+			_ = al.Append(cs.Events[len(cs.Events)-1])
+		}
+
+		// Record token cache event
+		cs.RecordEvent(domain.CredEventSsoTokenCached, payload.Session.SessionName)
+
+		// Append token event to activity log (best-effort)
+		if al != nil && len(cs.Events) > 0 {
+			_ = al.Append(cs.Events[len(cs.Events)-1])
+		}
+
+		// Update read projections
+		cs.SsoSession = payload.Session.SessionName
+		now := time.Now().UTC()
+		cs.LastSyncedAt = &now
+
+		return s.SaveState(state)
+	})
+}
+
+// chownSsoFiles sets ownership of SSO-related files to the given user.
+// This is best-effort — errors are silently ignored.
+func chownSsoFiles(owner, cachePath string) {
+	_ = exec.Command("chown", owner+":"+owner, cachePath).Run()
+	configPath := fmt.Sprintf("/home/%s/.aws/config", owner)
+	_ = exec.Command("chown", owner+":"+owner, configPath).Run()
+	awsDir := fmt.Sprintf("/home/%s/.aws", owner)
+	_ = exec.Command("chown", "-R", owner+":"+owner, awsDir).Run()
+}
